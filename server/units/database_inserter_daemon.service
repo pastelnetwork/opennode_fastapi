@@ -1,0 +1,16 @@
+[Unit]
+Description=Database inserter daemon for Pastel blockchain monitoring service
+After=multi-user.target
+
+[Service]
+ExecStart=/home/ubuntu/pastel_mining_monitor/venv/bin/python3.9 /home/ubuntu/pastel_mining_monitor/database_inserter_daemon.py
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec=5
+PrivateTmp=true
+
+Type=simple
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
