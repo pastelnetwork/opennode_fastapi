@@ -2,7 +2,7 @@ import base64
 import json
 import random
 import sys
-from typing import Union
+from typing import Optional
 
 import fastapi
 from fastapi import BackgroundTasks, Depends
@@ -30,6 +30,7 @@ tags_metadata = [
     {"name": "High-Level Methods", "description": "Endpoints that are not actually part of the Pastel RPC API, but operate at a higher level of abstraction."},
     {"name": "Blockchain Methods", "description": "Endpoints for retrieving blockchain data"},
     {"name": "Mining Methods", "description": "Endpoints for retrieving mining data"},
+    {"name": "Ticket Methods", "description": "Endpoints for retrieving blockchain ticket data"},
     {"name": "Supernode Methods", "description": "Endpoints for retrieving Supernode data"},
     {"name": "Network Methods", "description": "Endpoints for retrieving network data"},
     {"name": "Raw Transaction Methods", "description": "Endpoints for working with raw transactions"},
@@ -450,10 +451,62 @@ async def z_validateaddress(shielded_psl_address: str):
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
     except Exception as x:
         return fastapi.Response(content=str(x), status_code=500)
+    
+    
+@router.get('/list_all_openapi_tickets/', tags=["Ticket Methods"])
+@router.get('/list_all_openapi_tickets/{min_block_height}', tags=["Ticket Methods"])
+async def list_all_openapi_tickets(min_block_height: Optional[str] = '0'):
+    try:
+        global rpc_connection
+        response_json = await rpc_connection.tickets('list', 'action', 'all', min_block_height)
+        return response_json
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)    
+
                         
+@router.get('/list_only_activated_openapi_tickets/', tags=["Ticket Methods"])
+@router.get('/list_only_activated_openapi_tickets/{min_block_height}', tags=["Ticket Methods"])
+async def list_only_activated_openapi_tickets(min_block_height: Optional[str] = '0'):
+    try:
+        global rpc_connection
+        response_json = await rpc_connection.tickets('list', 'action', 'active', min_block_height)
+        return response_json
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)    
+    
+    
+@router.get('/list_only_inactive_openapi_tickets/', tags=["Ticket Methods"])
+@router.get('/list_only_inactive_openapi_tickets/{min_block_height}', tags=["Ticket Methods"])
+async def list_only_inactive_openapi_tickets(min_block_height: Optional[str] = '0'):
+    try:
+        global rpc_connection
+        response_json = await rpc_connection.tickets('list', 'action', 'inactive', min_block_height)
+        return response_json
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)    
+    
+    
+@router.get('/list_tickets_by_type/{ticket_type}', tags=["Ticket Methods"])
+@router.get('/list_tickets_by_type/{ticket_type}/{min_block_height}', tags=["Ticket Methods"])
+async def list_tickets_by_type(ticket_type: str, min_block_height: Optional[str] = '0'):
+    try:
+        global rpc_connection
+        response_json = await rpc_connection.tickets('list', ticket_type, min_block_height)
+        return response_json
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+                            
 
 @router.get('/get_all_ticket_data', tags=["High-Level Methods"])
-async def get_all_ticket_data() -> str:
+async def get_all_ticket_data():
     try:
         response_json = await get_all_pastel_blockchain_tickets_func()
         return response_json
