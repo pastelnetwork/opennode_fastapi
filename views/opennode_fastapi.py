@@ -2,11 +2,11 @@ import base64
 import json
 import random
 import sys
-from typing import Optional
+from typing import Union
 
 import fastapi
 from fastapi import BackgroundTasks, Depends
-
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi_chameleon import template
 from starlette.requests import Request
 from starlette import status
@@ -451,7 +451,7 @@ async def z_validateaddress(shielded_psl_address: str):
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
     except Exception as x:
         return fastapi.Response(content=str(x), status_code=500)
-    
+                        
     
 @router.get('/list_all_openapi_tickets/', tags=["Ticket Methods"])
 @router.get('/list_all_openapi_tickets/{min_block_height}', tags=["Ticket Methods"])
@@ -495,9 +495,23 @@ async def list_only_inactive_openapi_tickets(min_block_height: Optional[str] = '
 @router.get('/list_tickets_by_type/{ticket_type}', tags=["Ticket Methods"])
 @router.get('/list_tickets_by_type/{ticket_type}/{min_block_height}', tags=["Ticket Methods"])
 async def list_tickets_by_type(ticket_type: str, min_block_height: Optional[str] = '0'):
+#Possible values for ticket_type: 'id', 'nft', 'offer', 'accept', 'transfer', 'nft-collection', 'nft-collection-act', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act'
     try:
         global rpc_connection
-        response_json = await rpc_connection.tickets('list', ticket_type, min_block_height)
+        response_json = await rpc_connection.tickets('list', str(ticket_type), 'all', str(min_block_height))
+        return response_json
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
+@router.get('/list_active_tickets_by_type/{ticket_type}', tags=["Ticket Methods"])
+@router.get('/list_active_tickets_by_type/{ticket_type}/{min_block_height}', tags=["Ticket Methods"])
+async def list_active_tickets_by_type(ticket_type: str, min_block_height: Optional[str] = '0'):
+    try:
+        global rpc_connection
+        response_json = await rpc_connection.tickets('list', str(ticket_type), 'active', str(min_block_height))
         return response_json
     except ValidationError as ve:
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
@@ -505,8 +519,59 @@ async def list_tickets_by_type(ticket_type: str, min_block_height: Optional[str]
         return fastapi.Response(content=str(x), status_code=500)
                             
 
+@router.get('/list_inactive_tickets_by_type/{ticket_type}', tags=["Ticket Methods"])
+@router.get('/list_inactive_tickets_by_type/{ticket_type}/{min_block_height}', tags=["Ticket Methods"])
+async def list_inactive_tickets_by_type(ticket_type: str, min_block_height: Optional[str] = '0'):
+    try:
+        global rpc_connection
+        response_json = await rpc_connection.tickets('list', str(ticket_type), 'inactive', str(min_block_height))
+        return response_json
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
+@router.get('/find_action_ticket_by_pastelid/{pastelid}', tags=["Ticket Methods"])
+async def find_action_ticket_by_pastelid(pastelid: str):
+    try:
+        global rpc_connection
+        response_json = await rpc_connection.tickets('find', 'action', pastelid)
+        return response_json
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
+@router.get('/find_action_activation_ticket_by_pastelid/{pastelid}', tags=["Ticket Methods"])
+async def find_action_ticket_by_pastelid(pastelid: str):
+    try:
+        global rpc_connection
+        response_json = await rpc_connection.tickets('find', 'action-act', pastelid)
+        return response_json
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+        
+
+@router.get('/get_ticket_by_txid/{txid}', tags=["Ticket Methods"])
+async def get_ticket_by_txid(txid: str):
+    try:
+        global rpc_connection
+        response_json = await rpc_connection.tickets('get', txid )
+        activation_response_json = await rpc_connection.tickets('find', 'action-act', txid )
+        response_json['activation_ticket'] = activation_response_json
+        return response_json
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
 @router.get('/get_all_ticket_data', tags=["High-Level Methods"])
-async def get_all_ticket_data():
+async def get_all_ticket_data() -> str:
     try:
         response_json = await get_all_pastel_blockchain_tickets_func()
         return response_json
@@ -547,4 +612,25 @@ async def verify_message_with_pastelid(pastelid_pubkey: str, message_to_verify: 
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
     except Exception as x:
         return fastapi.Response(content=str(x), status_code=500)
+
+#Endpoint to respond with a PastelID file, given a desired password:
+@router.get('/testnet_pastelid_file_dispenser/{desired_password}', tags=["High-Level Methods"])
+async def testnet_pastelid_file_dispenser(desired_password: str):
+    try:
+        pastelid_pubkey, pastelid_data = await testnet_pastelid_file_dispenser_func(desired_password)
+        #send pastelid_data to user with StreamResponse, with the filename being the pastelid_pubkey:
+        response = StreamingResponse([pastelid_data], media_type="application/binary")
+        response.headers["Content-Disposition"] = f"attachment; filename=ticket.{pastelid_pubkey}"
+        return response
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
     
+
+
+
+
+
+
+
