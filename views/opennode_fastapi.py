@@ -28,6 +28,7 @@ from services.opennode_fastapi_service import *
 
 tags_metadata = [
     {"name": "High-Level Methods", "description": "Endpoints that are not actually part of the Pastel RPC API, but operate at a higher level of abstraction."},
+    {"name": "OpenAPI Methods", "description": "Endpoints that are interact with both the Pastel RPC API and also the Walletnode API to get information on Sense and Cascade."},
     {"name": "Blockchain Methods", "description": "Endpoints for retrieving blockchain data"},
     {"name": "Mining Methods", "description": "Endpoints for retrieving mining data"},
     {"name": "Ticket Methods", "description": "Endpoints for retrieving blockchain ticket data"},
@@ -42,7 +43,6 @@ class DateTimeEncoder(JSONEncoder):
     def default(self, obj):
         if isinstance(obj, (datetime.date, datetime.datetime)):
             return obj.isoformat()
-
 
 
 @router.get('/getbestblockhash', tags=["Blockchain Methods"])
@@ -633,6 +633,127 @@ async def testnet_pastelid_file_dispenser(desired_password: str):
     except Exception as x:
         return fastapi.Response(content=str(x), status_code=500)
     
+
+@router.get('/get_parsed_sense_results_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
+async def get_parsed_sense_results_by_registration_ticket_txid(txid: str):
+    try:
+        sense_data = await get_parsed_sense_results_by_registration_ticket_txid_func(txid)
+        return sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
+@router.get('/get_raw_sense_results_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
+async def get_raw_sense_results_by_registration_ticket_txid(txid: str):
+    try:
+        raw_sense_data = await get_raw_sense_results_by_registration_ticket_txid_func(txid)
+        return raw_sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
+@router.get('/get_parsed_sense_results_by_image_file_hash/{image_file_hash}', tags=["OpenAPI Methods"])
+async def get_parsed_sense_results_by_image_file_hash(image_file_hash: str):
+    try:
+        sense_data = await get_parsed_sense_results_by_image_file_hash_func(image_file_hash)
+        return sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
+@router.get('/get_raw_sense_results_by_image_file_hash/{image_file_hash}', tags=["OpenAPI Methods"])
+async def get_raw_sense_results_by_image_file_hash(image_file_hash: str):
+    try:
+        raw_sense_data = await get_raw_sense_results_by_image_file_hash_func(image_file_hash)
+        return raw_sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
+@router.get('/get_parsed_sense_results_by_pastel_id_of_submitter/{pastel_id_of_submitter}', tags=["OpenAPI Methods"])
+async def get_parsed_sense_results_by_pastel_id_of_submitter(pastel_id_of_submitter: str):
+    try:
+        sense_data = await get_parsed_sense_results_by_pastel_id_of_submitter_func(pastel_id_of_submitter)
+        return sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
+@router.get('/get_raw_sense_results_by_pastel_id_of_submitter/{pastel_id_of_submitter}', tags=["OpenAPI Methods"])
+async def get_raw_sense_results_by_pastel_id_of_submitter(pastel_id_of_submitter: str):
+    try:
+        raw_sense_data = await get_raw_sense_results_by_pastel_id_of_submitter_func(pastel_id_of_submitter)
+        return raw_sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+    
+
+@router.get('/get_parsed_sense_results_by_pastel_block_hash_when_request_submitted/{pastel_block_hash_when_request_submitted}', tags=["OpenAPI Methods"])
+async def get_parsed_sense_results_by_pastel_block_hash_when_request_submitted(pastel_block_hash_when_request_submitted: str):
+    try:
+        sense_data = await get_parsed_sense_results_by_pastel_block_hash_when_request_submitted_func(pastel_block_hash_when_request_submitted)
+        return sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
+@router.get('/get_raw_sense_results_by_pastel_block_hash_when_request_submitted/{pastel_block_hash_when_request_submitted}', tags=["OpenAPI Methods"])
+async def get_raw_sense_results_by_pastel_block_hash_when_request_submitted(pastel_block_hash_when_request_submitted: str):
+    try:
+        raw_sense_data = await get_raw_sense_results_by_pastel_block_hash_when_request_submitted_func(pastel_block_hash_when_request_submitted)
+        return raw_sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+    
+
+@router.get('/get_parsed_sense_results_by_pastel_block_height_when_request_submitted/{pastel_block_height_when_request_submitted}', tags=["OpenAPI Methods"])
+async def get_parsed_sense_results_by_pastel_block_height_when_request_submitted(pastel_block_height_when_request_submitted: str):
+    try:
+        sense_data = await get_parsed_sense_results_by_pastel_block_height_when_request_submitted_func(pastel_block_height_when_request_submitted)
+        return sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+
+
+@router.get('/get_raw_sense_results_by_pastel_block_height_when_request_submitted/{pastel_block_height_when_request_submitted}', tags=["OpenAPI Methods"])
+async def get_raw_sense_results_by_pastel_block_height_when_request_submitted(pastel_block_height_when_request_submitted: str):
+    try:
+        raw_sense_data = await get_raw_sense_results_by_pastel_block_height_when_request_submitted_func(pastel_block_height_when_request_submitted)
+        return raw_sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+    
+    
+@router.get('/populate_database_with_all_sense_data', tags=["OpenAPI Methods"])
+async def populate_database_with_all_sense_data(background_tasks: BackgroundTasks):
+    try:
+        #results = await populate_database_with_all_sense_data_func()
+        background_tasks.add_task(populate_database_with_all_sense_data_func)
+        return 'Started background task to populate database with all sense data...'
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
 
 
 
