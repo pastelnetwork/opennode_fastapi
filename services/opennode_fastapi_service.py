@@ -10,7 +10,7 @@ from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSession
 
 from data import db_session
-from data.opennode_fastapi import OpenNodeFastAPIRequests
+from data.opennode_fastapi import OpenNodeFastAPIRequests, OpenAPISenseData, OpenAPIRawSenseData
 import os
 import sys
 import time
@@ -26,6 +26,7 @@ import asyncio
 import numpy as np
 import pandas as pd
 import httpx
+import dirtyjson
 from pathlib import Path
 
 from timebudget import timebudget
@@ -73,13 +74,13 @@ HTTP_TIMEOUT = 30
 logging.basicConfig()
 log = logging.getLogger("PastelRPC")
 
-
+   
 def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~/.pastel/")):
     with open(os.path.join(directory_with_pastel_conf, "pastel.conf"), 'r') as f:
         lines = f.readlines()
     other_flags = {}
     rpchost = '127.0.0.1'
-    rpcport = '9932'
+    rpcport = '19932'
     for line in lines:
         if line.startswith('rpcport'):
             value = line.split('=')[1]
@@ -379,6 +380,305 @@ async def get_all_pastel_blockchain_tickets_func(verbose=0):
     return tickets_obj
 
 
+async def testnet_pastelid_file_dispenser_func(password, verbose=0):
+    with MyTimer():
+        print('Now generating a pastelid...')
+        response = await rpc_connection.pastelid('newkey', password)
+        pastelid_data = ''
+        pastelid_pubkey = ''
+        if response is not None and len(response) > 0:
+            if 'pastelid' in response:
+                print('The pastelid is ' + response['pastelid'])    
+                print('Now checking to see if the pastelid file exists...')
+                pastelid_pubkey = response['pastelid']
+                if os.path.exists('~/.pastel/testnet3/pastelkeys/' + response['pastelid']):
+                    print('The pastelid file exists!')
+                    with open('~/.pastel/testnet3/pastelkeys/' + response['pastelid'], 'rb') as f:
+                        pastelid_data = f.read()
+                        return pastelid_data                     
+                else:
+                    print('The pastelid file does not exist!')
+            else:
+                print('There was an issue creating the pastelid!')
+    return pastelid_pubkey, pastelid_data
+
+
+async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -> OpenAPISenseData:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPISenseData).filter(OpenAPISenseData.sense_registration_ticket_txid == txid)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalar_one_or_none()
+    if results_already_in_local_db is not None:
+        return results_already_in_local_db
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
+        request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
+        headers = {'Authorization': 'testpw123'}
+        with MyTimer():
+            async with httpx.AsyncClient() as client:
+                response = await client.get(request_url, headers=headers, timeout=60.0)    
+            parsed_response = response.json()
+            if parsed_response['file'] is None:
+                error_string = 'No file was returned from the Sense API!'
+                print(error_string)
+                return error_string
+            decoded_response = base64.b64decode(parsed_response['file'])
+            final_response = json.loads(decoded_response)
+            final_response_df = pd.DataFrame.from_records([final_response])
+        with MyTimer(): #Now we have the raw results from the Sense walletnode API, but we want to parse out the various fields and generate valid results that turn into valid json, and also save the results to our local sqlite database:
+            rareness_scores_table_json_compressed_b64 = final_response['rareness_scores_table_json_compressed_b64']
+            rareness_scores_table_json = str(zstd.decompress(base64.b64decode(rareness_scores_table_json_compressed_b64)))[2:-1]
+            rareness_scores_table_dict = json.loads(rareness_scores_table_json)
+            top_10_most_similar_registered_images_on_pastel_file_hashes = list(rareness_scores_table_dict['image_hash'].values())
+            is_likely_dupe_list = list(rareness_scores_table_dict['is_likely_dupe'].values())
+            detected_dupes_from_registered_images_on_pastel_file_hashes = [x for idx, x in enumerate(top_10_most_similar_registered_images_on_pastel_file_hashes) if is_likely_dupe_list[idx]]
+            detected_dupes_from_registered_images_on_pastel_thumbnail_strings = [x[0][0] for idx, x in enumerate(list(rareness_scores_table_dict['thumbnail'].values())) if is_likely_dupe_list[idx]]
+            
+            internet_rareness_json = final_response['internet_rareness']
+            if internet_rareness_json['min_number_of_exact_matches_in_page'] == 0:
+                internet_rareness__b64_image_strings_of_in_page_matches = ''
+                internet_rareness__original_urls_of_in_page_matches = ''
+                internet_rareness__result_titles_of_in_page_matches = ''
+                internet_rareness__date_strings_of_in_page_matches = ''
+            else:
+                internet_rareness_summary_table_json = str(zstd.decompress(base64.b64decode(internet_rareness_json['rare_on_internet_summary_table_as_json_compressed_b64'])))[2:-1]
+                internet_rareness_summary_table_dict = dirtyjson.loads(internet_rareness_summary_table_json.replace('\\"', '"').replace('\/', '/'))
+                internet_rareness_summary_table_df = pd.DataFrame.from_records(internet_rareness_summary_table_dict)
+                internet_rareness__b64_image_strings_of_in_page_matches = str(internet_rareness_summary_table_df['img_src_string'].values.tolist())
+                internet_rareness__original_urls_of_in_page_matches = str(internet_rareness_summary_table_df['original_url'].values.tolist())
+                internet_rareness__result_titles_of_in_page_matches = str(internet_rareness_summary_table_df['title'].values.tolist())
+                internet_rareness__date_strings_of_in_page_matches = str(internet_rareness_summary_table_df['date_string'].values.tolist())
+            
+            alternative_rare_on_internet_dict_as_json = str(zstd.decompress(base64.b64decode(internet_rareness_json['alternative_rare_on_internet_dict_as_json_compressed_b64'])))[2:-1]
+            if alternative_rare_on_internet_dict_as_json == '':
+                alternative_rare_on_internet__b64_image_strings = ''
+                alternative_rare_on_internet__original_urls = ''
+                alternative_rare_on_internet__result_titles = ''
+                alternative_rare_on_internet__number_of_similar_results = ''
+            else:
+                alternative_rare_on_internet_dict = dirtyjson.loads(alternative_rare_on_internet_dict_as_json.replace('\\"', '"').replace('\/', '/'))
+                if 'list_of_image_src_strings' in alternative_rare_on_internet_dict and len(alternative_rare_on_internet_dict['list_of_image_src_strings']) == 0:
+                    alternative_rare_on_internet__b64_image_strings = ''
+                    alternative_rare_on_internet__original_urls = ''
+                    alternative_rare_on_internet__result_titles = ''
+                    alternative_rare_on_internet__number_of_similar_results = ''
+                else:
+                    if 'list_of_text_strings' in alternative_rare_on_internet_dict:
+                        number_of_text_strings = len(alternative_rare_on_internet_dict['list_of_text_strings'])
+                        number_of_img_alt_strings = len(alternative_rare_on_internet_dict['list_of_image_alt_strings'])
+                        if number_of_text_strings != number_of_img_alt_strings: # Older versions of dd-service did not return text strings for each result, but rather all strings on the page. So we need to deal with that here because we can't turn it into a dataframe:
+                            list_of_alt_strings = alternative_rare_on_internet_dict['list_of_image_alt_strings']
+                            boolean_filter_for_favicons = [x.find('Favicon') == -1 for x in list_of_alt_strings]
+                            list_of_alternative_rare_on_internet__original_urls = alternative_rare_on_internet_dict['list_of_image_src_strings']
+                            alternative_rare_on_internet__b64_image_strings = str(['data:image/jpeg;base64,' + x for idx, x in enumerate(alternative_rare_on_internet_dict['list_of_images_as_base64']) if boolean_filter_for_favicons[idx]])
+                            alternative_rare_on_internet__original_urls = str([x for idx, x in enumerate(alternative_rare_on_internet_dict['list_of_image_src_strings']) if boolean_filter_for_favicons[idx]])
+                            alternative_rare_on_internet__result_titles = ""
+                            alternative_rare_on_internet__number_of_similar_results = sum(boolean_filter_for_favicons)
+                    else:
+                        alternative_rare_on_internet_df = pd.DataFrame.from_records(alternative_rare_on_internet_dict)
+                        alternative_rare_on_internet__b64_image_strings = str(alternative_rare_on_internet_df['list_of_image_src_strings'].values.tolist())
+                        alternative_rare_on_internet__original_urls = str(alternative_rare_on_internet_df['list_of_href_strings'].values.tolist())
+                        alternative_rare_on_internet__result_titles = str(alternative_rare_on_internet_df['list_of_image_alt_strings'].values.tolist())
+                        alternative_rare_on_internet__number_of_similar_results = len(alternative_rare_on_internet_df)
+                
+            sense_data = OpenAPISenseData()
+            sense_data.sense_registration_ticket_txid = txid
+            sense_data.hash_of_candidate_image_file = final_response_df['hash_of_candidate_image_file'][0]
+            sense_data.pastel_id_of_submitter = final_response_df['pastel_id_of_submitter'][0]
+            sense_data.pastel_block_hash_when_request_submitted = final_response_df['pastel_block_hash_when_request_submitted'][0]
+            sense_data.pastel_block_height_when_request_submitted = str(final_response_df['pastel_block_height_when_request_submitted'][0])
+            sense_data.dupe_detection_system_version = str(final_response_df['dupe_detection_system_version'][0])
+            sense_data.overall_rareness_score = final_response_df['overall_rareness_score '][0]
+            sense_data.open_nsfw_score = final_response_df['open_nsfw_score'][0] 
+            sense_data.alternative_nsfw_scores = str(final_response_df['alternative_nsfw_scores'][0])
+            sense_data.utc_timestamp_when_request_submitted = final_response_df['utc_timestamp_when_request_submitted'][0]
+            sense_data.is_likely_dupe = str(final_response_df['is_likely_dupe'][0])
+            sense_data.is_rare_on_internet = str(final_response_df['is_rare_on_internet'][0])
+            sense_data.is_pastel_openapi_request = str(final_response_df['is_pastel_openapi_request'][0])
+            sense_data.image_fingerprint_of_candidate_image_file = str(final_response_df['image_fingerprint_of_candidate_image_file'][0])
+            sense_data.pct_of_top_10_most_similar_with_dupe_prob_above_25pct = float(final_response_df['pct_of_top_10_most_similar_with_dupe_prob_above_25pct'][0])
+            sense_data.pct_of_top_10_most_similar_with_dupe_prob_above_33pct = float(final_response_df['pct_of_top_10_most_similar_with_dupe_prob_above_33pct'][0])
+            sense_data.pct_of_top_10_most_similar_with_dupe_prob_above_50pct = float(final_response_df['pct_of_top_10_most_similar_with_dupe_prob_above_50pct'][0])
+            sense_data.internet_rareness__min_number_of_exact_matches_in_page = str(internet_rareness_json['min_number_of_exact_matches_in_page'])
+            sense_data.internet_rareness__earliest_available_date_of_internet_results = internet_rareness_json['earliest_available_date_of_internet_results']
+            sense_data.internet_rareness__b64_image_strings_of_in_page_matches = internet_rareness__b64_image_strings_of_in_page_matches
+            sense_data.internet_rareness__original_urls_of_in_page_matches = internet_rareness__original_urls_of_in_page_matches
+            sense_data.internet_rareness__result_titles_of_in_page_matches = internet_rareness__result_titles_of_in_page_matches
+            sense_data.internet_rareness__date_strings_of_in_page_matches = internet_rareness__date_strings_of_in_page_matches
+            sense_data.alternative_rare_on_internet__number_of_similar_results = str(alternative_rare_on_internet__number_of_similar_results)
+            sense_data.alternative_rare_on_internet__b64_image_strings = alternative_rare_on_internet__b64_image_strings
+            sense_data.alternative_rare_on_internet__original_urls = alternative_rare_on_internet__original_urls
+            sense_data.alternative_rare_on_internet__result_titles = alternative_rare_on_internet__result_titles
+            async with db_session.create_async_session() as session:
+                session.add(sense_data)
+                await session.commit()
+            return sense_data
+
+
+async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> OpenAPIRawSenseData:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPIRawSenseData).filter(OpenAPIRawSenseData.sense_registration_ticket_txid == txid)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalar_one_or_none()
+    if results_already_in_local_db is not None:
+        return results_already_in_local_db
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
+        request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
+        headers = {'Authorization': 'testpw123'}
+        with MyTimer():
+            async with httpx.AsyncClient() as client:
+                response = await client.get(request_url, headers=headers, timeout=60.0)    
+            parsed_response = response.json()
+            if parsed_response['file'] is None:
+                error_string = 'No file was returned from the Sense API!'
+                print(error_string)
+                return error_string
+            decoded_response = base64.b64decode(parsed_response['file'])
+            final_response = json.loads(decoded_response)
+            final_response_df = pd.DataFrame.from_records([final_response])
+            raw_sense_data = OpenAPIRawSenseData()
+            raw_sense_data.sense_registration_ticket_txid = txid
+            raw_sense_data.hash_of_candidate_image_file = final_response_df['hash_of_candidate_image_file'][0]
+            raw_sense_data.pastel_id_of_submitter = final_response_df['pastel_id_of_submitter'][0]
+            raw_sense_data.pastel_block_hash_when_request_submitted = final_response_df['pastel_block_hash_when_request_submitted'][0]
+            raw_sense_data.pastel_block_height_when_request_submitted = str(final_response_df['pastel_block_height_when_request_submitted'][0])
+            raw_sense_data.raw_sense_data_json = decoded_response
+            async with db_session.create_async_session() as session:
+                session.add(raw_sense_data)
+                await session.commit()
+            return raw_sense_data
+
+
+async def populate_database_with_all_sense_data_func():
+    tickets_obj = await get_all_pastel_blockchain_tickets_func()
+    sense_ticket_dict = json.loads(tickets_obj['action'])
+    sense_ticket_df = pd.DataFrame(sense_ticket_dict).T
+    sense_ticket_df_filtered = sense_ticket_df[sense_ticket_df['action_type'] == 'sense'].drop_duplicates(subset=['txid'])
+    list_of_sense_registration_ticket_txids = sense_ticket_df_filtered['txid'].values.tolist()
+    list_of_known_bad_txids_to_skip = ['296df4ad6ac126794d0981ad04a2ed6b42364659a7d8a13c40ebf397744001c5',
+                                       'ce1dd0a4f42050445a81fb6dbc5f4fd3a63af4b611fd9e05c25d2eb1e4beefab']
+    list_of_sense_registration_ticket_txids = [x for x in list_of_sense_registration_ticket_txids if x not in list_of_known_bad_txids_to_skip]
+    pbar = tqdm(list_of_sense_registration_ticket_txids)
+    for idx, current_txid in enumerate(pbar):
+        pbar.set_description(f'Processing sense registration ticket with TXID: {current_txid}')
+        time.sleep(0.25)
+        current_sense_data = await get_parsed_sense_results_by_registration_ticket_txid_func(current_txid)
+        current_raw_sense_data = await get_raw_sense_results_by_registration_ticket_txid_func(current_txid)
+
+    return list_of_sense_registration_ticket_txids
+
+
+async def get_parsed_sense_results_by_image_file_hash_func(image_file_hash: str) -> OpenAPISenseData:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPISenseData).filter(OpenAPISenseData.hash_of_candidate_image_file == image_file_hash)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalar_one_or_none()
+    if results_already_in_local_db is not None:
+        return results_already_in_local_db
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        error_string = 'Cannot find a sense registration ticket with that image file hash-- it might still be processing or it might not exist!'
+        print(error_string)
+        return error_string
+
+
+async def get_raw_sense_results_by_image_file_hash_func(image_file_hash: str) -> OpenAPIRawSenseData:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPIRawSenseData).filter(OpenAPIRawSenseData.hash_of_candidate_image_file == image_file_hash)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalar_one_or_none()
+    if results_already_in_local_db is not None:
+        return results_already_in_local_db
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        error_string = 'Cannot find a sense registration ticket with that image file hash-- it might still be processing or it might not exist!'
+        print(error_string)
+        return error_string
+    
+
+async def get_parsed_sense_results_by_pastel_id_of_submitter_func(pastel_id_of_submitter: str) ->  Optional[List[OpenAPISenseData]]:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPISenseData).filter(OpenAPISenseData.pastel_id_of_submitter == pastel_id_of_submitter)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalars()
+    list_of_results = list({r for r in results_already_in_local_db})
+    if results_already_in_local_db is not None:
+        return list_of_results
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        error_string = 'Cannot find any sense registration tickets for that PastelID -- they might still be processing or they might not exist!'
+        print(error_string)
+        return error_string
+
+
+async def get_raw_sense_results_by_pastel_id_of_submitter_func(pastel_id_of_submitter: str) -> Optional[List[OpenAPIRawSenseData]]:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPIRawSenseData).filter(OpenAPIRawSenseData.pastel_id_of_submitter == pastel_id_of_submitter)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalars()
+    list_of_results = list({r for r in results_already_in_local_db})
+    if results_already_in_local_db is not None:
+        return list_of_results
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        error_string = 'Cannot find any sense registration tickets for that PastelID -- they might still be processing or they might not exist!'
+        print(error_string)
+        return error_string
+    
+
+async def get_parsed_sense_results_by_pastel_block_hash_when_request_submitted_func(pastel_block_hash_when_request_submitted: str) ->  Optional[List[OpenAPISenseData]]:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPISenseData).filter(OpenAPISenseData.pastel_block_hash_when_request_submitted == pastel_block_hash_when_request_submitted)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalars()
+    list_of_results = list({r for r in results_already_in_local_db})
+    if results_already_in_local_db is not None:
+        return list_of_results
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        error_string = 'Cannot find any sense registration tickets for that PastelID -- they might still be processing or they might not exist!'
+        print(error_string)
+        return error_string
+
+
+async def get_raw_sense_results_by_pastel_block_hash_when_request_submitted_func(pastel_block_hash_when_request_submitted: str) -> Optional[List[OpenAPIRawSenseData]]:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPIRawSenseData).filter(OpenAPIRawSenseData.pastel_block_hash_when_request_submitted == pastel_block_hash_when_request_submitted)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalars()
+    list_of_results = list({r for r in results_already_in_local_db})
+    if results_already_in_local_db is not None:
+        return list_of_results
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        error_string = 'Cannot find any sense registration tickets for that PastelID -- they might still be processing or they might not exist!'
+        print(error_string)
+        return error_string
+
+
+async def get_parsed_sense_results_by_pastel_block_height_when_request_submitted_func(pastel_block_height_when_request_submitted: str) ->  Optional[List[OpenAPISenseData]]:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPISenseData).filter(OpenAPISenseData.pastel_block_height_when_request_submitted == pastel_block_height_when_request_submitted)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalars()
+    list_of_results = list({r for r in results_already_in_local_db})
+    if results_already_in_local_db is not None:
+        return list_of_results
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        error_string = 'Cannot find any sense registration tickets for that PastelID -- they might still be processing or they might not exist!'
+        print(error_string)
+        return error_string
+
+
+async def get_raw_sense_results_by_pastel_block_height_when_request_submitted_func(pastel_block_height_when_request_submitted: str) -> Optional[List[OpenAPIRawSenseData]]:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPIRawSenseData).filter(OpenAPIRawSenseData.pastel_block_height_when_request_submitted == pastel_block_height_when_request_submitted)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalars()
+    list_of_results = list({r for r in results_already_in_local_db})
+    if results_already_in_local_db is not None:
+        return list_of_results
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        error_string = 'Cannot find any sense registration tickets for that PastelID -- they might still be processing or they might not exist!'
+        print(error_string)
+        return error_string
+
+    
 #Misc helper functions:
 class MyTimer():
     def __init__(self):
