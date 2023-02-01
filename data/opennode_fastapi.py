@@ -61,7 +61,8 @@ class OpenAPISenseData(SqlAlchemyBase):
     alternative_rare_on_internet__b64_image_strings: str = sa.Column(sa.String, nullable=False)
     alternative_rare_on_internet__original_urls: str = sa.Column(sa.String, nullable=False)
     alternative_rare_on_internet__result_titles: str = sa.Column(sa.String, nullable=False)
-    
+    corresponding_pastel_blockchain_ticket_data: str = sa.Column(sa.String, nullable=False)
+
       
 class OpenAPIRawSenseData(SqlAlchemyBase):
     __tablename__ = 'openapi_raw_sense_data'
@@ -71,3 +72,4 @@ class OpenAPIRawSenseData(SqlAlchemyBase):
     pastel_block_hash_when_request_submitted: str = sa.Column(sa.String, nullable=False)
     pastel_block_height_when_request_submitted: str = sa.Column(sa.String, nullable=False)
     raw_sense_data_json: str = sa.Column(sa.String, nullable=False)
+    corresponding_pastel_blockchain_ticket_data: str = sa.Column(sa.String, nullable=False)
