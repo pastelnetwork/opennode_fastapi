@@ -559,17 +559,8 @@ async def find_action_ticket_by_pastelid(pastelid: str):
 @router.get('/get_ticket_by_txid/{txid}', tags=["Ticket Methods"])
 async def get_ticket_by_txid(txid: str):
     try:
-        global rpc_connection
-        response_json = await rpc_connection.tickets('get', txid )
-        if len(response_json) > 0:
-            activation_response_json = await rpc_connection.tickets('find', 'action-act', txid )
-            if len(activation_response_json) > 0:
-                response_json['activation_ticket'] = activation_response_json
-            else:
-                response_json['activation_ticket'] = 'No activation ticket found for this ticket-- check again soon'
-            return response_json
-        else:
-            return fastapi.Response(content='No registration ticket found for this txid', status_code=404)
+        response_json = await get_pastel_blockchain_ticket_func(txid)
+        return response_json
     except ValidationError as ve:
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
     except Exception as x:
