@@ -365,6 +365,21 @@ async def get_df_json_from_tickets_list_rpc_response_func(rpc_response):
     return tickets_df_json
 
 
+async def get_pastel_blockchain_ticket_func(txid):
+    global rpc_connection
+    response_json = await rpc_connection.tickets('get', txid )
+    if len(response_json) > 0:
+        activation_response_json = await rpc_connection.tickets('find', 'action-act', txid )
+        if len(activation_response_json) > 0:
+            response_json['activation_ticket'] = activation_response_json
+        else:
+            response_json['activation_ticket'] = 'No activation ticket found for this ticket-- check again soon'
+        return response_json
+    else:
+        response_json = 'No ticket found for this txid'
+    return response_json
+
+
 async def get_all_pastel_blockchain_tickets_func(verbose=0):
     with MyTimer():
         if verbose:
@@ -509,6 +524,9 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
             sense_data.alternative_rare_on_internet__b64_image_strings = alternative_rare_on_internet__b64_image_strings
             sense_data.alternative_rare_on_internet__original_urls = alternative_rare_on_internet__original_urls
             sense_data.alternative_rare_on_internet__result_titles = alternative_rare_on_internet__result_titles
+            corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(txid)            
+            sense_data.corresponding_pastel_blockchain_ticket_data = str(corresponding_pastel_blockchain_ticket_data)
+            
             async with db_session.create_async_session() as session:
                 session.add(sense_data)
                 await session.commit()
@@ -544,6 +562,9 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
             raw_sense_data.pastel_block_hash_when_request_submitted = final_response_df['pastel_block_hash_when_request_submitted'][0]
             raw_sense_data.pastel_block_height_when_request_submitted = str(final_response_df['pastel_block_height_when_request_submitted'][0])
             raw_sense_data.raw_sense_data_json = decoded_response
+            corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(txid)            
+            raw_sense_data.corresponding_pastel_blockchain_ticket_data = str(corresponding_pastel_blockchain_ticket_data)
+            
             async with db_session.create_async_session() as session:
                 session.add(raw_sense_data)
                 await session.commit()
