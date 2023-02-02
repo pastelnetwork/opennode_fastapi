@@ -1,4 +1,4 @@
-# openapi.pastel.network
+# openapi.pastel.network Requirements List:
 **Pastel’s OpenAPI Gateway provides Web3 developers with easy, robust, and reliable access to the Pastel Network and its underlying decentralized protocols via a lightweight,** ***centralized*** **service. For more information on how the OpenAPI Gateway works, please see our docs** [**here**](https://openapi.pastel.network/docs)**.**
 
 
@@ -241,7 +241,7 @@ Modifications to functionality:
 - If `current_status` is `gateway_request_failed`, then we should automatically re-submit the `gateway_request` to the network without requiring the user to do so; is it already doing that given this `retry_num` field? https://github.com/pastelnetwork/openapi/blob/3d3cbe69eaf3a1398d53f2c9e10f246b4bfd85bb/backend/app/app/models/base_ticket.py#L31
 - Add Websocket
 - Discuss: Do we need to do S3 / AWS?
-- 
+- Discuss: Wrappers, NPM, etc.
 
 Samples:
 
