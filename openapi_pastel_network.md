@@ -73,13 +73,11 @@ The following metadata fields are returned by the OpenAPI Gateway from a `gatewa
 - Activation Ticket TXID
 - IPFS Link (another backup to Cascade)
 - AWS Link (another backup to Cascade)
-~~~~    
 
 Note: Information for any `gateway_result_id` will only be provided if the `current_status` is `gateway_request_successful`; if `current_status` is `gateway_request_failed`, then the OpenAPI Gateway will automatically resubmit the request for the user. If the `current_status` is `gateway_request_pending` or  `gateway_request_failed`, then the user will receive a placeholder informing them that results are `pending`.
 
 
 ----------
-
 
 # OpenAPI Gateway Endpoints
 
@@ -96,22 +94,22 @@ Note: Information for any `gateway_result_id` will only be provided if the `curr
 *OpenAPI Gateway Related Cascade Endpoints:*
 
 
-    POST /api/v1/cascade/
+    `POST /api/v1/cascade/`
 
 Submit a Cascade OpenAPI gateway_request for the current user.
 
 
-    GET /api/v1/cascade/gateway_requests
+    `GET /api/v1/cascade/gateway_requests`
 
 Get all Cascade OpenAPI gateway_requests for the current user.
 
 
-    GET /api/v1/cascade/gateway_requests/{gateway_request_id}
+    `GET /api/v1/cascade/gateway_requests/{gateway_request_id}`
 
 Get an individual Cascade gateway_request by its the gateway_request_id.
 
 
-    GET /api/v1/cascade/gateway_results
+    `GET /api/v1/cascade/gateway_results`
 
 Get all Cascade gateway_results for the current user.
 
