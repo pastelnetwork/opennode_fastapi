@@ -95,42 +95,34 @@ Note: Information for any `gateway_result_id` will only be provided if the `curr
 
 
     `POST /api/v1/cascade/`
-
 Submit a Cascade OpenAPI gateway_request for the current user.
 
 
     `GET /api/v1/cascade/gateway_requests`
-
 Get all Cascade OpenAPI gateway_requests for the current user.
 
 
     `GET /api/v1/cascade/gateway_requests/{gateway_request_id}`
-
 Get an individual Cascade gateway_request by its the gateway_request_id.
 
 
     `GET /api/v1/cascade/gateway_results`
-
 Get all Cascade gateway_results for the current user.
 
 
     GET /api/v1/cascade/gateway_results/{gateway_result_id}
-
 Get an individual Cascade gateway_result by its result_id.
 
 
     GET /api/v1/cascade/stored_file/{gateway_result_id}
-
 Get the underlying Cascade stored_file from the corresponding gateway_result_id.
 
 
     GET /api/v1/cascade/all_files_from_request/{gateway_request_id}
-
 Get the set of underlying Cascade stored_files from the corresponding gateway_request_id.
 
 
     GET /api/v1/cascade/pastel_ticket_data_from_request_id/{gateway_request_id}
-
 Get the the set of Pastel Cascade ticket data objects (metadata) from the blockchain corresponding to a particular gateway_request_id.
 
 
@@ -138,17 +130,14 @@ Get the the set of Pastel Cascade ticket data objects (metadata) from the blockc
 
 
     GET /api/v1/cascade/file_from_registration_txid/{registration_ticket_txid}
-
 Get the underlying Cascade stored_file from the corresponding Cascade Registration Ticket Transaction ID. (Note: Only available if the user owns the Cascade file or the `make_publically_accessible` flag is set to True for that Cascade operation.)
 
 
     GET /api/v1/cascade/pastel_ticket_data/{registration_ticket_txid}
-
 Get the Pastel Ticket metadata corresponding to a Cascade Registration Ticket Transaction ID. (Note: Available to any user and also visible on the [Pastel Explorer site](https://explorer.pastel.network/)).
 
 
     GET /api/v1/cascade/pastel_ticket_data_from_stored_file_hash/{stored_file_sha256_hash}
-
 Get the the set of Pastel Cascade ticket data objects (metadata) from the blockchain corresponding to a particular stored_file_sha256_hash. Contains pastel_block_number and pastel_id in case there are multiple results for the same stored_file_sha256_hash.
 
 
@@ -160,42 +149,34 @@ Get the the set of Pastel Cascade ticket data objects (metadata) from the blockc
 
 
     POST /api/v1/sense/
-
 Submit a Sense OpenAPI gateway_request for the current user.
 
 
     GET /api/v1/sense/gateway_requests
-
 Get all Sense OpenAPI gateway_requests for the current user.
 
 
     GET /api/v1/sense/gateway_requests/{gateway_request_id}
-
 Get an individual Sense gateway_request by its the gateway_request_id.
 
 
     GET /api/v1/sense/gateway_results
-
 Get all Sense gateway_results for the current user.
 
 
     GET /api/v1/sense/gateway_results/{gateway_result_id}
-
 Get an individual Sense gateway_result by its result_id.
 
 
     GET /api/v1/sense/all_raw_output_files_from_request/{gateway_request_id}
-
 Get the set of underlying Sense raw_outputs_files from the corresponding gateway_request_id.
 
 
     GET /api/v1/sense/all_parsed_output_files_from_request/{gateway_request_id}
-
 Get the set of underlying Sense parsed_outputs_files from the corresponding gateway_request_id.
 
 
     GET /api/v1/sense/pastel_ticket_data_from_request_id/{gateway_request_id}
-
 Get the the set of Pastel Sense ticket data objects (metadata) from the blockchain corresponding to a particular gateway_request_id.
 
 
@@ -203,32 +184,26 @@ Get the the set of Pastel Sense ticket data objects (metadata) from the blockcha
 
 
     GET /api/v1/sense/raw_output_file_from_registration_txid/{registration_ticket_txid}
-
 Get the underlying Sense raw_output_file from the corresponding Sense Registration Ticket Transaction ID. (Note: Available to any user and also visible on the [Pastel Explorer site](https://explorer.pastel.network/)).
 
 
     GET /api/v1/sense/parsed_output_file_from_registration_txid/{registration_ticket_txid}
-
 Get the underlying Sense parsed_output_file from the corresponding Sense Registration Ticket Transaction ID. (Note: Available to any user and also visible on the [Pastel Explorer site](https://explorer.pastel.network/)).
 
 
     GET /api/v1/sense/raw_output_file_from_pastel_id/{pastel_id_of_user}
-
 Get a list of the Sense raw_output_files for the given pastel_id. (Note: Available to any user and also visible on the [Pastel Explorer site](https://explorer.pastel.network/)).
 
 
     GET /api/v1/sense/parsed_output_file_from_pastel_id/{pastel_id_of_user}
-
 Get a list of the Sense parsed_output_files for the given pastel_id. (Note: Available to any user and also visible on the [Pastel Explorer site](https://explorer.pastel.network/)).
 
 
     GET /api/v1/sense/pastel_ticket_data/{registration_ticket_txid}
-
 Get the Pastel Ticket metadata corresponding to a Sense Registration Ticket Transaction ID. (Note: Available to any user and also visible on the [Pastel Explorer site](https://explorer.pastel.network/)).
 
 
     GET /api/v1/sense/pastel_ticket_data_from_stored_file_hash/{media_file_sha256_hash}
-
 Get the the set of Pastel Sense ticket data (metadata, not the underlying stored file) from the blockchain corresponding to a particular media_file_sha256_hash; Contains block number and pastel_id in case there are multiple results for the same media_file_sha256_hash.
 
 
