@@ -2,10 +2,10 @@
 **Pastel’s OpenAPI Gateway provides Web3 developers with easy, robust, and reliable access to the Pastel Network and its underlying decentralized protocols via a lightweight,** ***centralized*** **service. For more information on how the OpenAPI Gateway works, please see our docs** [**here**](https://openapi.pastel.network/docs)**.**
 
 
-******Clarifying Notes:**
+**Clarifying Notes:**
 *It’s important to understand the difference between concepts that exist in Pastel’s core decentralized blockchain protocol versus concepts that exist only in the centralized OpenAPI Gateway system. We urge* *users to review the following:*
 
-***Core*** ***Pastel*** *********Decentralized*** ***Protocol Concepts:***
+***Core Pastel Decentralized Protocol Concepts:***
 
 - **Sense** and **Cascade** are both operations that exist in the core Pastel blockchain protocol; Cascade is for permanent file storage, while Sense is for near-duplicate media file detection and fingerprinting (for now, only images are supported, but soon Sense will also support videos and audio files, and eventually also text documents, 3D files, and more). 
 
