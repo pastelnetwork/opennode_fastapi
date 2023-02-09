@@ -37,7 +37,7 @@ app.add_middleware(
 
 async def run_task_periodically(background_tasks: BackgroundTasks):
     while True:
-        if random.rand() > 0.75:
+        if random.random() > 0.75:
             return_message = await opennode_fastapi_service.run_populate_database_with_all_sense_data_func(background_tasks)
         await asyncio.sleep(180)
 
