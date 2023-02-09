@@ -18,6 +18,8 @@ from fastapi import BackgroundTasks
 import nest_asyncio
 nest_asyncio.apply()
 import asyncio
+import time
+
 
 description_string = """
 🎢 Pastel's OpenNode FastAPI provides various informational API endpoints to retrieve information about the Pastel Blockchain. 💸
@@ -37,9 +39,8 @@ app.add_middleware(
 
 async def run_task_periodically(background_tasks: BackgroundTasks):
     while True:
-        if random.random() > 0.75:
-            return_message = await opennode_fastapi_service.run_populate_database_with_all_sense_data_func(background_tasks)
-        await asyncio.sleep(180)
+        return_message = await opennode_fastapi_service.run_populate_database_with_all_sense_data_func(background_tasks)
+        await asyncio.sleep(120)
 
 
 def start_background_tasks(app, background_tasks: BackgroundTasks):
@@ -101,5 +102,7 @@ if __name__ == '__main__':
     freeze_support()
     main()
 else:
-    start_background_tasks(app, background_tasks)
+    if random.random() > 0.5:
+        time.sleep(random.randint(3, 6))
+        start_background_tasks(app, background_tasks)
     configure(dev_mode=False)
