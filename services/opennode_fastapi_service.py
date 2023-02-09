@@ -8,6 +8,7 @@ import sqlalchemy as sa
 from sqlalchemy import func, update, delete, desc
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSession
+from fastapi import BackgroundTasks, Depends, Body
 
 from data import db_session
 from data.opennode_fastapi import OpenNodeFastAPIRequests, OpenAPISenseData, OpenAPIRawSenseData
@@ -457,13 +458,28 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
                 internet_rareness__date_strings_of_in_page_matches = ''
             else:
                 internet_rareness_summary_table_json = str(zstd.decompress(base64.b64decode(internet_rareness_json['rare_on_internet_summary_table_as_json_compressed_b64'])))[2:-1]
-                internet_rareness_summary_table_dict = dirtyjson.loads(internet_rareness_summary_table_json.replace('\\"', '"').replace('\/', '/'))
+                try:
+                    internet_rareness_summary_table_dict = json.loads(internet_rareness_summary_table_json.encode('utf-8').decode('unicode_escape'))
+                except Exception as e:
+                    print(f"Encountered an error while trying to parse internet_rareness_summary_table_json: {e}")
+                    internet_rareness_summary_table_dict = dirtyjson.loads(internet_rareness_summary_table_json.replace('\\"', '"').replace('\/', '/'))
                 internet_rareness_summary_table_df = pd.DataFrame.from_records(internet_rareness_summary_table_dict)
-                internet_rareness__b64_image_strings_of_in_page_matches = str(internet_rareness_summary_table_df['img_src_string'].values.tolist())
-                internet_rareness__original_urls_of_in_page_matches = str(internet_rareness_summary_table_df['original_url'].values.tolist())
-                internet_rareness__result_titles_of_in_page_matches = str(internet_rareness_summary_table_df['title'].values.tolist())
-                internet_rareness__date_strings_of_in_page_matches = str(internet_rareness_summary_table_df['date_string'].values.tolist())
-            
+                if 'img_src_string' in internet_rareness_summary_table_df.columns:
+                    internet_rareness__b64_image_strings_of_in_page_matches = str(internet_rareness_summary_table_df['img_src_string'].values.tolist())
+                else:
+                    internet_rareness__b64_image_strings_of_in_page_matches = ''
+                if 'original_url' in internet_rareness_summary_table_df.columns:
+                    internet_rareness__original_urls_of_in_page_matches = str(internet_rareness_summary_table_df['original_url'].values.tolist())
+                else:
+                    internet_rareness__original_urls_of_in_page_matches = ''
+                if 'title' in internet_rareness_summary_table_df.columns:
+                    internet_rareness__result_titles_of_in_page_matches = str(internet_rareness_summary_table_df['title'].values.tolist())
+                else:
+                    internet_rareness__result_titles_of_in_page_matches = ''
+                if 'date_string' in internet_rareness_summary_table_df.columns:
+                    internet_rareness__date_strings_of_in_page_matches = str(internet_rareness_summary_table_df['date_string'].values.tolist())
+                else:
+                    internet_rareness__date_strings_of_in_page_matches = ''
             alternative_rare_on_internet_dict_as_json = str(zstd.decompress(base64.b64decode(internet_rareness_json['alternative_rare_on_internet_dict_as_json_compressed_b64'])))[2:-1]
             if alternative_rare_on_internet_dict_as_json == '':
                 alternative_rare_on_internet__b64_image_strings = ''
@@ -471,7 +487,11 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
                 alternative_rare_on_internet__result_titles = ''
                 alternative_rare_on_internet__number_of_similar_results = ''
             else:
-                alternative_rare_on_internet_dict = dirtyjson.loads(alternative_rare_on_internet_dict_as_json.replace('\\"', '"').replace('\/', '/'))
+                try:
+                    alternative_rare_on_internet_dict = json.loads(alternative_rare_on_internet_dict_as_json.encode('utf-8').decode('unicode_escape'))
+                except Exception as e:
+                    print(f"Encountered an error while trying to parse alternative_rare_on_internet_dict_as_json: {e}")
+                    alternative_rare_on_internet_dict = dirtyjson.loads(alternative_rare_on_internet_dict_as_json.replace('\\"', '"').replace('\/', '/').replace('\\n', ' '))
                 if 'list_of_image_src_strings' in alternative_rare_on_internet_dict and len(alternative_rare_on_internet_dict['list_of_image_src_strings']) == 0:
                     alternative_rare_on_internet__b64_image_strings = ''
                     alternative_rare_on_internet__original_urls = ''
@@ -489,13 +509,18 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
                             alternative_rare_on_internet__original_urls = str([x for idx, x in enumerate(alternative_rare_on_internet_dict['list_of_image_src_strings']) if boolean_filter_for_favicons[idx]])
                             alternative_rare_on_internet__result_titles = ""
                             alternative_rare_on_internet__number_of_similar_results = sum(boolean_filter_for_favicons)
-                    else:
+                    elif 'list_of_image_src_strings' in alternative_rare_on_internet_dict:
                         alternative_rare_on_internet_df = pd.DataFrame.from_records(alternative_rare_on_internet_dict)
                         alternative_rare_on_internet__b64_image_strings = str(alternative_rare_on_internet_df['list_of_image_src_strings'].values.tolist())
                         alternative_rare_on_internet__original_urls = str(alternative_rare_on_internet_df['list_of_href_strings'].values.tolist())
                         alternative_rare_on_internet__result_titles = str(alternative_rare_on_internet_df['list_of_image_alt_strings'].values.tolist())
                         alternative_rare_on_internet__number_of_similar_results = len(alternative_rare_on_internet_df)
-                
+                    else:
+                        alternative_rare_on_internet__b64_image_strings = ''
+                        alternative_rare_on_internet__original_urls = ''
+                        alternative_rare_on_internet__result_titles = ''
+                        alternative_rare_on_internet__number_of_similar_results = ''
+                                        
             sense_data = OpenAPISenseData()
             sense_data.sense_registration_ticket_txid = txid
             sense_data.hash_of_candidate_image_file = final_response_df['hash_of_candidate_image_file'][0]
@@ -586,30 +611,36 @@ async def populate_database_with_all_sense_data_func():
         time.sleep(0.25)
         current_sense_data = await get_parsed_sense_results_by_registration_ticket_txid_func(current_txid)
         current_raw_sense_data = await get_raw_sense_results_by_registration_ticket_txid_func(current_txid)
-
     return list_of_sense_registration_ticket_txids
 
 
-async def get_parsed_sense_results_by_image_file_hash_func(image_file_hash: str) -> OpenAPISenseData:
+async def run_populate_database_with_all_sense_data_func(background_tasks: BackgroundTasks = Depends):
+    background_tasks.add_task(await populate_database_with_all_sense_data_func())
+    return {"message": 'Started background task to populate database with all sense data...'}
+
+
+async def get_parsed_sense_results_by_image_file_hash_func(image_file_hash: str) -> Optional[List[OpenAPISenseData]]:
     async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
         query = select(OpenAPISenseData).filter(OpenAPISenseData.hash_of_candidate_image_file == image_file_hash)
         result = await session.execute(query)
-    results_already_in_local_db = result.scalar_one_or_none()
+    results_already_in_local_db = result.scalars()
+    list_of_results = list({r for r in results_already_in_local_db})
     if results_already_in_local_db is not None:
-        return results_already_in_local_db
+        return list_of_results
     else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
         error_string = 'Cannot find a sense registration ticket with that image file hash-- it might still be processing or it might not exist!'
         print(error_string)
         return error_string
 
 
-async def get_raw_sense_results_by_image_file_hash_func(image_file_hash: str) -> OpenAPIRawSenseData:
+async def get_raw_sense_results_by_image_file_hash_func(image_file_hash: str) ->  Optional[List[OpenAPISenseData]]:
     async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
         query = select(OpenAPIRawSenseData).filter(OpenAPIRawSenseData.hash_of_candidate_image_file == image_file_hash)
         result = await session.execute(query)
-    results_already_in_local_db = result.scalar_one_or_none()
+    results_already_in_local_db = result.scalars()
+    list_of_results = list({r for r in results_already_in_local_db})
     if results_already_in_local_db is not None:
-        return results_already_in_local_db
+        return list_of_results
     else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
         error_string = 'Cannot find a sense registration ticket with that image file hash-- it might still be processing or it might not exist!'
         print(error_string)

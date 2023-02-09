@@ -735,16 +735,15 @@ async def get_raw_sense_results_by_pastel_block_height_when_request_submitted(pa
         return fastapi.Response(content=str(x), status_code=500)
     
     
-@router.get('/populate_database_with_all_sense_data', tags=["OpenAPI Methods"])
-async def populate_database_with_all_sense_data(background_tasks: BackgroundTasks):
-    try:
-        #results = await populate_database_with_all_sense_data_func()
-        background_tasks.add_task(populate_database_with_all_sense_data_func)
-        return 'Started background task to populate database with all sense data...'
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
+# @router.get('/populate_database_with_all_sense_data', tags=["OpenAPI Methods"])
+# async def populate_database_with_all_sense_data(background_tasks: BackgroundTasks):
+#     try:
+#         background_tasks.add_task(populate_database_with_all_sense_data_func)
+#         return 'Started background task to populate database with all sense data...'
+#     except ValidationError as ve:
+#         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+#     except Exception as x:
+#         return fastapi.Response(content=str(x), status_code=500)
 
 
 

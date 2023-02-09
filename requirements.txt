@@ -25,3 +25,5 @@ psutil
 pyod
 watchgod
 tornado
+dirtyjson
+nest_asyncio
