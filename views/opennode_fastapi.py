@@ -734,6 +734,28 @@ async def get_raw_sense_results_by_pastel_block_height_when_request_submitted(pa
     except Exception as x:
         return fastapi.Response(content=str(x), status_code=500)
     
+
+@router.get('/get_current_total_number_of_registered_sense_fingerprints/', tags=["OpenAPI Methods"])
+async def get_current_total_number_of_registered_sense_fingerprints():
+    try:
+        fingerprint_counter = await get_current_total_number_of_registered_sense_fingerprints_func()
+        return fingerprint_counter
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500) 
+
+
+@router.get('/get_current_total_number_and_size_and_average_size_of_registered_cascade_files/', tags=["OpenAPI Methods"])
+async def get_current_total_number_and_size_and_average_size_of_registered_cascade_files():
+    try:
+        response = await get_current_total_number_and_size_and_average_size_of_registered_cascade_files_func()
+        return response
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500) 
+
     
 # @router.get('/populate_database_with_all_sense_data', tags=["OpenAPI Methods"])
 # async def populate_database_with_all_sense_data(background_tasks: BackgroundTasks):
