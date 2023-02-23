@@ -55,7 +55,7 @@ except ImportError:
     import urlparse
 from tornado import gen, ioloop
 from tornado.httpclient import AsyncHTTPClient, HTTPRequest, HTTPError
-
+import aiohttp
 
 
 number_of_cpus = os.cpu_count()
@@ -609,8 +609,11 @@ async def populate_database_with_all_sense_data_func():
     for idx, current_txid in enumerate(pbar):
         pbar.set_description(f'Processing sense registration ticket with TXID: {current_txid}')
         time.sleep(0.25)
-        current_sense_data = await get_parsed_sense_results_by_registration_ticket_txid_func(current_txid)
-        current_raw_sense_data = await get_raw_sense_results_by_registration_ticket_txid_func(current_txid)
+        try:
+            current_sense_data = await get_parsed_sense_results_by_registration_ticket_txid_func(current_txid)
+            current_raw_sense_data = await get_raw_sense_results_by_registration_ticket_txid_func(current_txid)
+        except:
+            pass
     return list_of_sense_registration_ticket_txids
 
 
@@ -729,6 +732,53 @@ async def get_raw_sense_results_by_pastel_block_height_when_request_submitted_fu
         error_string = 'Cannot find any sense registration tickets for that PastelID -- they might still be processing or they might not exist!'
         print(error_string)
         return error_string
+        
+
+async def get_current_total_number_of_registered_sense_fingerprints_func():
+    tickets_obj = await get_all_pastel_blockchain_tickets_func()
+    sense_ticket_dict = json.loads(tickets_obj['action'])
+    sense_ticket_df = pd.DataFrame(sense_ticket_dict).T
+    sense_ticket_df_filtered = sense_ticket_df[sense_ticket_df['action_type'] == 'sense'].drop_duplicates(subset=['txid'])
+    list_of_sense_action_tickets = sense_ticket_df_filtered['action_ticket'].values.tolist()
+    boolean_filter = [len(x) > 2000 for x in list_of_sense_action_tickets]
+    sense_ticket_df_filtered = sense_ticket_df_filtered[boolean_filter]
+    list_of_sense_registration_ticket_txids = sense_ticket_df_filtered['txid'].values.tolist()
+    fingerprint_counter = len(list_of_sense_registration_ticket_txids)
+    current_datetime_utc = datetime.datetime.utcnow()
+    current_datetime_utc_string = current_datetime_utc.strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = int(datetime.datetime.timestamp(current_datetime_utc))
+    response = {'total_number_of_registered_sense_fingerprints': fingerprint_counter, 'as_of_datetime_utc_string': current_datetime_utc_string, 'as_of_timestamp': timestamp}
+    return response
+
+
+
+async def get_current_total_number_and_size_and_average_size_of_registered_cascade_files_func():
+    tickets_obj = await get_all_pastel_blockchain_tickets_func()
+    cascade_ticket_dict = json.loads(tickets_obj['action'])
+    cascade_ticket_df = pd.DataFrame(cascade_ticket_dict).T
+    cascade_ticket_df_filtered = cascade_ticket_df[cascade_ticket_df['action_type'] == 'cascade'].drop_duplicates(subset=['txid'])
+    list_of_cascade_registration_ticket_txids = cascade_ticket_df_filtered['txid'].values.tolist()
+    list_of_cascade_action_tickets = cascade_ticket_df_filtered['action_ticket'].values.tolist()
+    list_of_known_bad_cascade_txids_to_skip = []
+    file_counter = 0
+    data_size_bytes_counter = 0
+    for idx, current_txid in enumerate(list_of_cascade_registration_ticket_txids):
+        current_api_ticket = list_of_cascade_action_tickets[idx]
+        decoded_action_ticket = json.loads(base64.b64decode(current_api_ticket).decode('utf-8'))
+        api_ticket = decoded_action_ticket['api_ticket']
+        api_ticket_decoded = json.loads(base64.a85decode(api_ticket).decode('utf-8'))
+        if api_ticket_decoded is not None:
+            if len(api_ticket_decoded) == 6:
+                file_counter += 1
+                approximate_file_size_in_bytes = len(api_ticket_decoded['rq_ids'])*(50000)/12.0
+                data_size_bytes_counter += approximate_file_size_in_bytes
+    average_file_size_in_bytes = round(data_size_bytes_counter/file_counter,3)
+    current_datetime_utc = datetime.datetime.utcnow()
+    current_datetime_utc_string = current_datetime_utc.strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = int(datetime.datetime.timestamp(current_datetime_utc))
+    response = {'total_number_of_registered_cascade_files': file_counter, 'data_size_bytes_counter': round(data_size_bytes_counter,3), 'average_file_size_in_bytes': average_file_size_in_bytes, 'as_of_datetime_utc_string': current_datetime_utc_string, 'as_of_timestamp': timestamp}
+    return response
+
 
     
 #Misc helper functions:
