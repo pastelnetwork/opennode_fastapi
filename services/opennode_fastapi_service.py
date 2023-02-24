@@ -425,8 +425,10 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
         result = await session.execute(query)
     results_already_in_local_db = result.scalar_one_or_none()
     if results_already_in_local_db is not None:
-        return results_already_in_local_db
+        is_cached_response = True
+        return results_already_in_local_db, is_cached_response
     else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        is_cached_response = False
         requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
         request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
         headers = {'Authorization': 'testpw123'}
@@ -555,7 +557,7 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
             async with db_session.create_async_session() as session:
                 session.add(sense_data)
                 await session.commit()
-            return sense_data
+            return sense_data, is_cached_response
 
 
 async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> OpenAPIRawSenseData:
@@ -564,8 +566,10 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
         result = await session.execute(query)
     results_already_in_local_db = result.scalar_one_or_none()
     if results_already_in_local_db is not None:
-        return results_already_in_local_db
+        is_cached_response = True
+        return results_already_in_local_db, is_cached_response
     else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        is_cached_response = False
         requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
         request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
         headers = {'Authorization': 'testpw123'}
@@ -593,7 +597,7 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
             async with db_session.create_async_session() as session:
                 session.add(raw_sense_data)
                 await session.commit()
-            return raw_sense_data
+            return raw_sense_data, is_cached_response
 
 
 async def populate_database_with_all_sense_data_func():
@@ -605,16 +609,16 @@ async def populate_database_with_all_sense_data_func():
     list_of_known_bad_txids_to_skip = ['296df4ad6ac126794d0981ad04a2ed6b42364659a7d8a13c40ebf397744001c5',
                                        'ce1dd0a4f42050445a81fb6dbc5f4fd3a63af4b611fd9e05c25d2eb1e4beefab']
     list_of_sense_registration_ticket_txids = [x for x in list_of_sense_registration_ticket_txids if x not in list_of_known_bad_txids_to_skip]
-    pbar = tqdm(list_of_sense_registration_ticket_txids)
-    for idx, current_txid in enumerate(pbar):
-        pbar.set_description(f'Processing sense registration ticket with TXID: {current_txid}')
-        time.sleep(0.25)
+    for current_txid in list_of_sense_registration_ticket_txids[::-1]:
         try:
-            current_sense_data = await get_parsed_sense_results_by_registration_ticket_txid_func(current_txid)
-            current_raw_sense_data = await get_raw_sense_results_by_registration_ticket_txid_func(current_txid)
-        except:
+            current_sense_data, is_cached_response__parsed = await get_parsed_sense_results_by_registration_ticket_txid_func(current_txid)
+            current_raw_sense_data, is_cached_response__raw = await get_raw_sense_results_by_registration_ticket_txid_func(current_txid)
+            if is_cached_response__parsed and is_cached_response__raw:
+                break
+            else:
+                print(f'Processing sense registration ticket with TXID: {current_txid}')
+        except Exception as e:
             pass
-    return list_of_sense_registration_ticket_txids
 
 
 async def run_populate_database_with_all_sense_data_func(background_tasks: BackgroundTasks = Depends):
