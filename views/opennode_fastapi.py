@@ -495,7 +495,7 @@ async def list_only_inactive_openapi_tickets(min_block_height: Optional[str] = '
 @router.get('/list_tickets_by_type/{ticket_type}', tags=["Ticket Methods"])
 @router.get('/list_tickets_by_type/{ticket_type}/{min_block_height}', tags=["Ticket Methods"])
 async def list_tickets_by_type(ticket_type: str, min_block_height: Optional[str] = '0'):
-#Possible values for ticket_type: 'id', 'nft', 'offer', 'accept', 'transfer', 'nft-collection', 'nft-collection-act', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act'
+#Possible values for ticket_type: 'id', 'nft', 'offer', 'accept', 'transfer', 'collection', 'collection-act', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act'
     try:
         global rpc_connection
         response_json = await rpc_connection.tickets('list', str(ticket_type), 'all', str(min_block_height))
