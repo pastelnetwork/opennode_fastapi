@@ -386,7 +386,7 @@ async def get_all_pastel_blockchain_tickets_func(verbose=0):
         if verbose:
             print('Now retrieving all Pastel blockchain tickets...')
         tickets_obj = {}
-        list_of_ticket_types = ['id', 'nft', 'offer', 'accept', 'transfer', 'nft-collection', 'nft-collection-act', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act']
+        list_of_ticket_types = ['id', 'nft', 'offer', 'accept', 'transfer', 'collection', 'collection-act', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act']
         for current_ticket_type in list_of_ticket_types:
             if verbose:
                 print('Getting ' + current_ticket_type + ' tickets...')
