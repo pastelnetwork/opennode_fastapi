@@ -755,7 +755,6 @@ async def get_current_total_number_of_registered_sense_fingerprints_func():
     return response
 
 
-
 async def get_current_total_number_and_size_and_average_size_of_registered_cascade_files_func():
     tickets_obj = await get_all_pastel_blockchain_tickets_func()
     cascade_ticket_dict = json.loads(tickets_obj['action'])
@@ -766,25 +765,48 @@ async def get_current_total_number_and_size_and_average_size_of_registered_casca
     list_of_known_bad_cascade_txids_to_skip = []
     file_counter = 0
     data_size_bytes_counter = 0
+    publicly_accessible_files = 0
+    publicly_accessible_bytes = 0
+    file_type_counter = {}
     for idx, current_txid in enumerate(list_of_cascade_registration_ticket_txids):
         current_api_ticket = list_of_cascade_action_tickets[idx]
         decoded_action_ticket = json.loads(base64.b64decode(current_api_ticket).decode('utf-8'))
         api_ticket = decoded_action_ticket['api_ticket']
-        api_ticket_decoded = json.loads(base64.a85decode(api_ticket).decode('utf-8'))
+        api_ticket += "=" * (-len(api_ticket) % 4)
+        api_ticket_decoded = json.loads(base64.b64decode(api_ticket).decode('utf-8'))
         if api_ticket_decoded is not None:
-            if len(api_ticket_decoded) == 6:
+            if len(api_ticket_decoded) == 9:
                 file_counter += 1
-                approximate_file_size_in_bytes = len(api_ticket_decoded['rq_ids'])*(50000)/12.0
-                data_size_bytes_counter += approximate_file_size_in_bytes
+                file_size = api_ticket_decoded['original_file_size_in_bytes']
+                data_size_bytes_counter += file_size
+                if api_ticket_decoded['make_publicly_accessible']:
+                    publicly_accessible_files += 1
+                    publicly_accessible_bytes += file_size
+                file_type = api_ticket_decoded['file_type']
+                if file_type not in file_type_counter:
+                    file_type_counter[file_type] = {'count': 0, 'size': 0}
+                file_type_counter[file_type]['count'] += 1
+                file_type_counter[file_type]['size'] += file_size
+    for key in file_type_counter:
+        file_type_counter[key]['percentage_files'] = (file_type_counter[key]['count'] / file_counter) * 100
+        file_type_counter[key]['percentage_size'] = (file_type_counter[key]['size'] / data_size_bytes_counter) * 100
+    percentage_publicly_accessible_files = (publicly_accessible_files / file_counter) * 100
+    percentage_publicly_accessible_bytes = (publicly_accessible_bytes / data_size_bytes_counter) * 100
     average_file_size_in_bytes = round(data_size_bytes_counter/file_counter,3)
     current_datetime_utc = datetime.datetime.utcnow()
     current_datetime_utc_string = current_datetime_utc.strftime("%Y-%m-%d %H:%M:%S")
     timestamp = int(datetime.datetime.timestamp(current_datetime_utc))
-    response = {'total_number_of_registered_cascade_files': file_counter, 'data_size_bytes_counter': round(data_size_bytes_counter,3), 'average_file_size_in_bytes': average_file_size_in_bytes, 'as_of_datetime_utc_string': current_datetime_utc_string, 'as_of_timestamp': timestamp}
+    response = {'total_number_of_registered_cascade_files': file_counter, 
+                'data_size_bytes_counter': round(data_size_bytes_counter,3), 
+                'average_file_size_in_bytes': average_file_size_in_bytes, 
+                'as_of_datetime_utc_string': current_datetime_utc_string, 
+                'as_of_timestamp': timestamp,
+                'percentage_publicly_accessible_files': percentage_publicly_accessible_files,
+                'percentage_publicly_accessible_bytes': percentage_publicly_accessible_bytes,
+                'file_type_statistics': file_type_counter}
     return response
 
-
-    
+   
 #Misc helper functions:
 class MyTimer():
     def __init__(self):
