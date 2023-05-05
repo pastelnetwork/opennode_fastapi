@@ -571,7 +571,7 @@ async def get_ticket_by_txid(txid: str):
 async def get_all_ticket_data() -> str:
     try:
         response_json = await get_all_pastel_blockchain_tickets_func()
-        return response_json
+        return str(response_json)
     except ValidationError as ve:
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
     except Exception as x:
