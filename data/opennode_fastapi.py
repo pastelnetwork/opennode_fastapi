@@ -60,7 +60,6 @@ class OpenAPISenseData(SqlAlchemyBase):
     alternative_rare_on_internet__number_of_similar_results: str = sa.Column(sa.String, nullable=False)
     alternative_rare_on_internet__b64_image_strings: str = sa.Column(sa.String, nullable=False)
     alternative_rare_on_internet__original_urls: str = sa.Column(sa.String, nullable=False)
-    alternative_rare_on_internet__result_titles: str = sa.Column(sa.String, nullable=False)
     corresponding_pastel_blockchain_ticket_data: str = sa.Column(sa.String, nullable=False)
 
 class OpenAPISenseTop10MostSimilarImagesData(SqlAlchemyBase):
