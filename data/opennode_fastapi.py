@@ -63,6 +63,11 @@ class OpenAPISenseData(SqlAlchemyBase):
     alternative_rare_on_internet__result_titles: str = sa.Column(sa.String, nullable=False)
     corresponding_pastel_blockchain_ticket_data: str = sa.Column(sa.String, nullable=False)
 
+class OpenAPISenseTop10MostSimilarImagesData(SqlAlchemyBase):
+    __tablename__ = 'openapi_sense_top_10_most_similar_images_data'
+    sense_registration_ticket_txid: str = sa.Column(sa.String, nullable=False, index=True, primary_key=True)
+    hash_of_candidate_image_file: str = sa.Column(sa.String, nullable=False, index=True)
+    rareness_scores_table_json: str = sa.Column(sa.String, nullable=False)             
       
 class OpenAPIRawSenseData(SqlAlchemyBase):
     __tablename__ = 'openapi_raw_sense_data'
