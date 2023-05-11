@@ -500,29 +500,16 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
                     alternative_rare_on_internet__result_titles = ''
                     alternative_rare_on_internet__number_of_similar_results = ''
                 else:
-                    if 'list_of_text_strings' in alternative_rare_on_internet_dict:
-                        number_of_text_strings = len(alternative_rare_on_internet_dict['list_of_text_strings'])
-                        number_of_img_alt_strings = len(alternative_rare_on_internet_dict['list_of_image_alt_strings'])
-                        if number_of_text_strings != number_of_img_alt_strings: # Older versions of dd-service did not return text strings for each result, but rather all strings on the page. So we need to deal with that here because we can't turn it into a dataframe:
-                            list_of_alt_strings = alternative_rare_on_internet_dict['list_of_image_alt_strings']
-                            boolean_filter_for_favicons = [x.find('Favicon') == -1 for x in list_of_alt_strings]
-                            list_of_alternative_rare_on_internet__original_urls = alternative_rare_on_internet_dict['list_of_image_src_strings']
-                            alternative_rare_on_internet__b64_image_strings = str(['data:image/jpeg;base64,' + x for idx, x in enumerate(alternative_rare_on_internet_dict['list_of_images_as_base64']) if boolean_filter_for_favicons[idx]])
-                            alternative_rare_on_internet__original_urls = str([x for idx, x in enumerate(alternative_rare_on_internet_dict['list_of_image_src_strings']) if boolean_filter_for_favicons[idx]])
-                            alternative_rare_on_internet__result_titles = ""
-                            alternative_rare_on_internet__number_of_similar_results = sum(boolean_filter_for_favicons)
-                    elif 'list_of_image_src_strings' in alternative_rare_on_internet_dict:
+                    if 'list_of_image_src_strings' in alternative_rare_on_internet_dict:
                         alternative_rare_on_internet_df = pd.DataFrame.from_records(alternative_rare_on_internet_dict)
                         alternative_rare_on_internet__b64_image_strings = str(alternative_rare_on_internet_df['list_of_image_src_strings'].values.tolist())
                         alternative_rare_on_internet__original_urls = str(alternative_rare_on_internet_df['list_of_href_strings'].values.tolist())
-                        alternative_rare_on_internet__result_titles = str(alternative_rare_on_internet_df['list_of_image_alt_strings'].values.tolist())
                         alternative_rare_on_internet__number_of_similar_results = len(alternative_rare_on_internet_df)
                     else:
                         alternative_rare_on_internet__b64_image_strings = ''
                         alternative_rare_on_internet__original_urls = ''
                         alternative_rare_on_internet__result_titles = ''
                         alternative_rare_on_internet__number_of_similar_results = ''
-                                        
             sense_data = OpenAPISenseData()
             sense_data.sense_registration_ticket_txid = txid
             sense_data.hash_of_candidate_image_file = final_response_df['hash_of_candidate_image_file'][0]
@@ -550,15 +537,50 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
             sense_data.alternative_rare_on_internet__number_of_similar_results = str(alternative_rare_on_internet__number_of_similar_results)
             sense_data.alternative_rare_on_internet__b64_image_strings = alternative_rare_on_internet__b64_image_strings
             sense_data.alternative_rare_on_internet__original_urls = alternative_rare_on_internet__original_urls
-            sense_data.alternative_rare_on_internet__result_titles = alternative_rare_on_internet__result_titles
             corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(txid)            
             sense_data.corresponding_pastel_blockchain_ticket_data = str(corresponding_pastel_blockchain_ticket_data)
-            
             async with db_session.create_async_session() as session:
                 session.add(sense_data)
                 await session.commit()
             return sense_data, is_cached_response
 
+
+async def get_sense_results_top_10_most_similar_images_by_registration_ticket_txid_func(txid: str) -> OpenAPISenseData:
+    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
+        query = select(OpenAPISenseTop10MostSimilarImagesData).filter(OpenAPISenseTop10MostSimilarImagesData.sense_registration_ticket_txid == txid)
+        result = await session.execute(query)
+    results_already_in_local_db = result.scalar_one_or_none()
+    if results_already_in_local_db is not None:
+        is_cached_response = True
+        return results_already_in_local_db, is_cached_response
+    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
+        is_cached_response = False
+        requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
+        request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
+        headers = {'Authorization': 'testpw123'}
+        with MyTimer():
+            async with httpx.AsyncClient() as client:
+                response = await client.get(request_url, headers=headers, timeout=60.0)    
+            parsed_response = response.json()
+            if parsed_response['file'] is None:
+                error_string = 'No file was returned from the Sense API!'
+                print(error_string)
+                return error_string
+            decoded_response = base64.b64decode(parsed_response['file'])
+            final_response = json.loads(decoded_response)
+            final_response_df = pd.DataFrame.from_records([final_response])
+        with MyTimer(): #Now we have the raw results from the Sense walletnode API, but we want to parse out the various fields and generate valid results that turn into valid json, and also save the results to our local sqlite database:
+            rareness_scores_table_json_compressed_b64 = final_response['rareness_scores_table_json_compressed_b64']
+            rareness_scores_table_json = str(zstd.decompress(base64.b64decode(rareness_scores_table_json_compressed_b64)))[2:-1]
+            most_similar_images_data = OpenAPISenseTop10MostSimilarImagesData()
+            most_similar_images_data.sense_registration_ticket_txid = txid
+            most_similar_images_data.hash_of_candidate_image_file = final_response_df['hash_of_candidate_image_file'][0]
+            most_similar_images_data.rareness_scores_table_json = rareness_scores_table_json
+            async with db_session.create_async_session() as session:
+                session.add(most_similar_images_data)
+                await session.commit()
+            return most_similar_images_data, is_cached_response
+        
 
 async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> OpenAPIRawSenseData:
     async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
@@ -613,7 +635,9 @@ async def populate_database_with_all_sense_data_func():
         try:
             current_sense_data, is_cached_response__parsed = await get_parsed_sense_results_by_registration_ticket_txid_func(current_txid)
             current_raw_sense_data, is_cached_response__raw = await get_raw_sense_results_by_registration_ticket_txid_func(current_txid)
-            if is_cached_response__parsed and is_cached_response__raw:
+            current_most_similar_images_data, is_cached_response__most_similar_images = await get_sense_results_top_10_most_similar_images_by_registration_ticket_txid_func(current_txid)
+            
+            if is_cached_response__parsed and is_cached_response__raw and is_cached_response__most_similar_images:
                 break
             else:
                 print(f'Processing sense registration ticket with TXID: {current_txid}')
