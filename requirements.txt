@@ -24,6 +24,9 @@ zstandard
 psutil
 pyod
 watchgod
-tornado
 dirtyjson
 nest_asyncio
+pyston_lite_autoload
+tabulate 
+cachetools
+aiofiles
