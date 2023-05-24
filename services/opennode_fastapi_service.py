@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSessio
 from fastapi import BackgroundTasks, Depends, Body
 
 from data import db_session
-from data.opennode_fastapi import OpenNodeFastAPIRequests, OpenAPISenseData, OpenAPIRawSenseData
+from data.opennode_fastapi import OpenNodeFastAPIRequests, OpenAPISenseData, OpenAPIRawSenseData, PastelBlockData, PastelAddressData, PastelTransactionData, PastelTransactionInputData, PastelTransactionOutputData, OpenAPISenseTop10MostSimilarImagesData
 import os
 import sys
 import time
@@ -44,19 +44,23 @@ from email import encoders
 import http.client as httplib
 import base64
 import decimal
-import logging
 import urllib.parse as urlparse
-import datetime
 import statistics
+from fastapi import BackgroundTasks, Depends
 
 try:
     import urllib.parse as urlparse
 except ImportError:
     import urlparse
-from tornado import gen, ioloop
-from tornado.httpclient import AsyncHTTPClient, HTTPRequest, HTTPError
+# from tornado import gen, ioloop
+# from tornado.httpclient import AsyncHTTPClient, HTTPRequest, HTTPError
 import aiohttp
-
+from httpx import AsyncClient
+import logging
+from sqlalchemy import Index
+from sqlalchemy.orm import aliased
+from sqlalchemy import select
+from tabulate import tabulate
 
 number_of_cpus = os.cpu_count()
 my_os = platform.system()
@@ -74,6 +78,23 @@ HTTP_TIMEOUT = 30
 
 logging.basicConfig()
 log = logging.getLogger("PastelRPC")
+
+
+# Set up real-time notification system
+class NotificationSystem:
+    @staticmethod
+    def notify(event_type: str, data: dict):
+        # Sample implementation for sending notifications via email
+        subject = f"Notification: {event_type}"
+        body = str(data)
+        recipients = ["jeff@pastel.network"]  # List of subscribers
+        # send_email(subject, body, recipients)  # Implement send_email function
+
+# Additional index to improve address balance lookup
+Index('idx_pastel_address_data_address', PastelAddressData.pastel_address)
+
+# Optimized block scanning configuration
+BLOCK_SCAN_BATCH_SIZE = 100
 
    
 def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~/.pastel/")):
@@ -128,100 +149,70 @@ def EncodeDecimal(o):
     raise TypeError(repr(o) + " is not JSON serializable")
     
 
-class AsyncAuthServiceProxy(object):
-    def __init__(self, service_url, service_name=None, timeout=HTTP_TIMEOUT,
-                reconnect_timeout=2, reconnect_amount=5, max_clients=100,
-                max_buffer_size=104857600):
-        """
-        :arg service_url: in format "http://{user}:{password}@{host}:{port}"
-        :arg service_name: TBD
-        :arg timeout: TBD
-        :arg reconnect_timeout: TBD
-        :arg reconnect_amount: TBD
-        :arg int max_clients: max_clients is the number of concurrent
-            requests that can be in progress. Look tornado's docs for
-            SimpleAsyncHTTPClient
-        :arg string max_buffer_size: is the number of bytes that can be
-            read by IOStream. It defaults to 100mb. Look tornado's docs for
-            SimpleAsyncHTTPClient
-        """
 
-        self.__service_url = service_url
-        self.__reconnect_timeout = reconnect_timeout
-        self.__reconnect_amount = reconnect_amount or 1
-        self.__service_name = service_name
-        self.__url = urlparse.urlparse(service_url)
-        self.__http_client = AsyncHTTPClient(max_clients=max_clients,
-            max_buffer_size=max_buffer_size)
-        self.__id_count = 0
-        (user, passwd) = (self.__url.username, self.__url.password)
-        try:
-            user = user.encode('utf8')
-        except AttributeError:
-            pass
-        try:
-            passwd = passwd.encode('utf8')
-        except AttributeError:
-            pass
-        authpair = user + b':' + passwd
-        self.__auth_header = b'Basic ' + base64.b64encode(authpair)
+class AsyncAuthServiceProxy:
+    def __init__(self, service_url, service_name=None, reconnect_timeout=2, reconnect_amount=2):
+        self.service_url = service_url
+        self.service_name = service_name
+        self.url = urlparse.urlparse(service_url)
+        self.client = AsyncClient()
+        self.id_count = 0
+        user = self.url.username
+        password = self.url.password
+        authpair = f"{user}:{password}".encode('utf-8')
+        self.auth_header = b'Basic ' + base64.b64encode(authpair)
+        self.reconnect_timeout = reconnect_timeout
+        self.reconnect_amount = reconnect_amount
 
     def __getattr__(self, name):
         if name.startswith('__') and name.endswith('__'):
-            # Python internal stuff
             raise AttributeError
-        if self.__service_name is not None:
-            name = "%s.%s" % (self.__service_name, name)
-        return AsyncAuthServiceProxy(self.__service_url, name)
+        if self.service_name is not None:
+            name = f"{self.service_name}.{name}"
+        return AsyncAuthServiceProxy(self.service_url, name)
 
-    @gen.coroutine
-    def __call__(self, *args):
-        self.__id_count += 1
-
-        postdata = json.dumps({'version': '1.1',
-                               'method': self.__service_name,
-                               'params': args,
-                               'id': self.__id_count})
+    async def __call__(self, *args):
+        self.id_count += 1
+        postdata = json.dumps({
+            'version': '1.1',
+            'method': self.service_name,
+            'params': args,
+            'id': self.id_count
+        }, default=EncodeDecimal)
         headers = {
-            'Host': self.__url.hostname,
-            'User-Agent': USER_AGENT,
-            'Authorization': self.__auth_header,
+            'Host': self.url.hostname,
+            'User-Agent': "AuthServiceProxy/0.1",
+            'Authorization': self.auth_header,
             'Content-type': 'application/json'
         }
-
-        req = HTTPRequest(url=self.__service_url, method="POST",
-            body=postdata,
-            headers=headers)
-
-        for i in range(self.__reconnect_amount):
+        
+        for i in range(self.reconnect_amount):
             try:
                 if i > 0:
-                    log.warning("Reconnect try #{0}".format(i+1))
-                response = yield self.__http_client.fetch(req)
+                    log.warning(f"Reconnect try #{i+1}")
+                response = await self.client.post(
+                    self.service_url, headers=headers, data=postdata)
                 break
-            except HTTPError:
-                err_msg = 'Failed to connect to {0}:{1}'.format(
-                    self.__url.hostname, self.__url.port)
-                rtm = self.__reconnect_timeout
+            except Exception as e:
+                err_msg = f"Failed to connect to {self.url.hostname}:{self.url.port}"
+                rtm = self.reconnect_timeout
                 if rtm:
-                    err_msg += ". Waiting {0} seconds.".format(rtm)
+                    err_msg += f". Waiting {rtm} seconds."
                 log.exception(err_msg)
                 if rtm:
-                    # io_loop = ioloop.IOLoop.current()
-                    # yield gen.Task(io_loop.add_timeout, timedelta(seconds=rtm))
-                    yield gen.sleep(rtm)
+                    await asyncio.sleep(rtm)
         else:
-            log.error("Reconnect tries exceed.")
+            log.error("Reconnect tries exceeded.")
             return
-        response = json.loads(response.body, parse_float=decimal.Decimal)
 
-        if response['error'] is not None:
-            raise JSONRPCException(response['error'])
-        elif 'result' not in response:
+        response_json = response.json()
+        if response_json['error'] is not None:
+            raise JSONRPCException(response_json['error'])
+        elif 'result' not in response_json:
             raise JSONRPCException({
                 'code': -343, 'message': 'missing JSON-RPC result'})
         else:
-            raise gen.Return(response['result'])
+            return response_json['result']
        
         
 def get_current_pastel_block_height_func():
@@ -386,7 +377,7 @@ async def get_all_pastel_blockchain_tickets_func(verbose=0):
         if verbose:
             print('Now retrieving all Pastel blockchain tickets...')
         tickets_obj = {}
-        list_of_ticket_types = ['id', 'nft', 'offer', 'accept', 'transfer', 'collection', 'collection-act', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act']
+        list_of_ticket_types = ['id', 'nft', 'offer', 'accept', 'transfer', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act'] # 'collection', 'collection-act'
         for current_ticket_type in list_of_ticket_types:
             if verbose:
                 print('Getting ' + current_ticket_type + ' tickets...')
@@ -580,7 +571,7 @@ async def get_sense_results_top_10_most_similar_images_by_registration_ticket_tx
                 session.add(most_similar_images_data)
                 await session.commit()
             return most_similar_images_data, is_cached_response
-        
+
 
 async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> OpenAPIRawSenseData:
     async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
@@ -620,6 +611,45 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
                 session.add(raw_sense_data)
                 await session.commit()
             return raw_sense_data, is_cached_response
+
+
+async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str):
+    requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
+    request_url = f'http://localhost:8080/openapi/cascade/download?pid={requester_pastelid}&txid={txid}'
+    headers = {'Authorization': 'testpw123'}
+    is_publicly_accessible = True
+    try:
+        print(f'Attempting to get original file name from the Cascade blockchain ticket for registration txid {txid}...')
+        ticket_response = await get_pastel_blockchain_ticket_func(txid)
+        action_ticket = json.loads(base64.b64decode(ticket_response['ticket']['action_ticket']))
+        api_ticket_str = action_ticket['api_ticket']
+        correct_padding = len(api_ticket_str) % 4
+        if correct_padding != 0:
+            api_ticket_str += '='* (4 - correct_padding)
+        api_ticket =  json.loads(base64.b64decode(api_ticket_str).decode('utf-8'))
+        original_file_name_string = api_ticket['file_name']
+        is_publicly_accessible = api_ticket['make_publicly_accessible']
+        print(f'Got original file name from the Cascade blockchain ticket: {original_file_name_string}')
+    except:
+        print('Unable to get original file name from the Cascade blockchain ticket! Using txid instead as the default file name...')
+        original_file_name_string = str(txid)
+    if is_publicly_accessible == True:
+        with MyTimer():
+            print(f'Now attempting to download the file from Cascade API for txid {txid}...')
+            async with httpx.AsyncClient() as client:
+                response = await client.get(request_url, headers=headers, timeout=300.0)    
+            parsed_response = response.json()
+            print(f'Got response from Cascade API for txid {txid}')
+            if parsed_response['file'] is None:
+                error_string = 'No file was returned from the Cascade API!'
+                print(error_string)
+                return error_string, original_file_name_string
+            decoded_response = base64.b64decode(parsed_response['file'])
+            print(f'Successfully decoded response from Cascade API for txid {txid}!')
+    else:
+        decoded_response = f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!'
+        print(decoded_response)
+    return decoded_response, original_file_name_string
 
 
 async def populate_database_with_all_sense_data_func():
@@ -830,7 +860,147 @@ async def get_current_total_number_and_size_and_average_size_of_registered_casca
                 'file_type_statistics': file_type_counter}
     return response
 
-   
+
+async def parse_and_store_transaction(txid: str, block_height: int, session):
+    try:
+        # Retrieve raw transaction data
+        raw_transaction_data = await rpc_connection.getrawtransaction(txid, 1)
+        # Create a PastelTransactionData object
+        transaction = PastelTransactionData(transaction_id=txid)
+        # Parse inputs
+        for vin in raw_transaction_data['vin']:
+            # Create a PastelTransactionInputData object and add to transaction inputs
+            input_data = PastelTransactionInputData(
+                transaction_id=txid,
+                previous_output_id=vin['vout']
+            )
+            transaction.inputs.append(input_data)
+        # Parse outputs
+        for vout in raw_transaction_data['vout']:
+            # Create a PastelTransactionOutputData object and add to transaction outputs
+            output_data = PastelTransactionOutputData(
+                transaction_id=txid,
+                amount=vout['value'],
+                pastel_address=vout['scriptPubKey']['addresses'][0]
+            )
+            transaction.outputs.append(output_data)
+            # Update address balance
+            address_data = session.query(PastelAddressData).filter_by(pastel_address=output_data.pastel_address).one_or_none()
+            if address_data:
+                address_data.balance += output_data.amount
+            else:
+                address_data = PastelAddressData(pastel_address=output_data.pastel_address, balance=output_data.amount)
+                session.add(address_data)
+        # Store the transaction data in the database
+        session.add(transaction)
+        await session.flush()
+        # Update the number of confirmations for the transaction
+        current_block_height = await rpc_connection.getblockcount()
+        transaction.confirmations = current_block_height - block_height + 1
+    except Exception as e:
+        log.error(f"Error while processing transaction {txid}: {e}")
+
+
+async def parse_and_store_block(block_hash: str, session):
+    try:
+        # Retrieve block data
+        block_data = await rpc_connection.getblock(block_hash)
+        # Create a PastelBlockData object
+        block = PastelBlockData(
+            block_hash=block_hash,
+            block_height=block_data['height'],
+            previous_block_hash=block_data['previousblockhash'],
+            timestamp=datetime.datetime.fromtimestamp(block_data['time'])
+        )
+        # Parse transactions in the block
+        for txid in block_data['tx']:
+            # Parse and store transaction data
+            await parse_and_store_transaction(txid, block_data['height'], session)
+        # Store the block data in the database
+        session.add(block)
+        await session.flush()
+    except Exception as e:
+        log.error(f"Error while processing block {block_hash}: {e}")
+
+
+async def handle_block_reorganization(new_block_hash: str, session):
+    # Get the latest block from the database
+    last_block_query = select(PastelBlockData).order_by(PastelBlockData.block_height.desc())
+    last_block_result = await session.execute(last_block_query)
+    last_block = last_block_result.scalar_one_or_none()
+    # Check for reorganization
+    if last_block.block_hash != new_block_hash:
+        # Handle reorganization: reverse changes and rescan affected blocks
+        # Find common ancestor block
+        new_block = await session.get(PastelBlockData, new_block_hash)
+        old_block = last_block
+        while old_block.block_hash != new_block.block_hash:
+            if old_block is None or new_block is None:
+                # Handle the case where there is no common ancestor block
+                log.error("Could not find a common ancestor block during reorganization")
+                return
+            if old_block.block_height > new_block.block_height:
+                old_block = await session.get(PastelBlockData, old_block.previous_block_hash)
+            elif old_block.block_height < new_block.block_height:
+                new_block = await session.get(PastelBlockData, new_block.previous_block_hash)
+            else:
+                old_block = await session.get(PastelBlockData, old_block.previous_block_hash)
+                new_block = await session.get(PastelBlockData, new_block.previous_block_hash)
+        # Delete orphaned blocks and associated transactions, inputs, and outputs
+        OrphanedBlock = aliased(PastelBlockData)
+        orphaned_blocks_query = select(OrphanedBlock).filter(OrphanedBlock.block_height > old_block.block_height)
+        orphaned_blocks = await session.execute(orphaned_blocks_query)
+        for orphaned_block in orphaned_blocks.scalars():
+            session.delete(orphaned_block)
+        # Rescan and add new blocks
+        await parse_and_store_block(new_block_hash, session)
+        # Commit changes to the database
+        await session.commit()
+        # Notify of blockchain reorganization
+        NotificationSystem.notify('reorganization', {'new_block_hash': new_block_hash})
+
+
+async def scan_new_blocks():
+    global rpc_connection
+    async with db_session.create_async_session() as session:
+        try:
+            # Get the current block height
+            current_block_height = await rpc_connection.getblockcount()
+            # Get the latest block height stored in the database
+            last_block_query = select(PastelBlockData).order_by(PastelBlockData.block_height.desc())
+            last_block_result = await session.execute(last_block_query)
+            last_block = last_block_result.scalar_one_or_none()
+            last_block_height = last_block.block_height if last_block else 0
+            # Check for blockchain reorganization
+            if last_block:
+                await handle_block_reorganization(await rpc_connection.getblockhash(last_block_height), session)
+            # Optimized block scanning
+            while last_block_height < current_block_height:
+                # Determine batch size for scanning
+                scan_batch_size = min(BLOCK_SCAN_BATCH_SIZE, current_block_height - last_block_height)
+                # Scan new blocks in batches
+                for block_height in range(last_block_height + 1, last_block_height + scan_batch_size + 1):
+                    # Get the block hash
+                    block_hash = await rpc_connection.getblockhash(block_height)
+                    # Parse and store block data
+                    await parse_and_store_block(block_hash, session)
+                # Commit changes to the database
+                await session.commit()
+                # Update last block height
+                last_block_height += scan_batch_size
+                # Notify of progress
+                log.info(f"Successfully scanned and updated blocks {last_block_height - scan_batch_size + 1} to {last_block_height}")
+        except Exception as e:
+            log.error(f"Error while scanning new blocks: {e}")
+            # Optionally, handle rollback in case of error
+            await session.rollback()
+            
+
+async def run_scan_new_blocks_func(background_tasks: BackgroundTasks = Depends):
+    background_tasks.add_task(await scan_new_blocks())
+    return {"message": 'Started background task to scan all blocks...'}            
+    
+    
 #Misc helper functions:
 class MyTimer():
     def __init__(self):
@@ -933,5 +1103,5 @@ def install_pasteld_func(network_name='testnet'):
 #_______________________________________________________________________________________________________________________________
 
 rpc_host, rpc_port, rpc_user, rpc_password, other_flags = get_local_rpc_settings_func()
-rpc_connection = AsyncAuthServiceProxy("http://%s:%s@%s:%s"%(rpc_user, rpc_password, rpc_host, rpc_port), timeout=2)
+rpc_connection = AsyncAuthServiceProxy("http://%s:%s@%s:%s"%(rpc_user, rpc_password, rpc_host, rpc_port))
 
