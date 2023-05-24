@@ -2,10 +2,11 @@ import base64
 import json
 import random
 import sys
-from typing import Union
+import io
+from typing import Union, Dict, Any
 
 import fastapi
-from fastapi import BackgroundTasks, Depends
+from fastapi import BackgroundTasks, Depends, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi_chameleon import template
 from starlette.requests import Request
@@ -610,6 +611,7 @@ async def verify_message_with_pastelid(pastelid_pubkey: str, message_to_verify: 
     except Exception as x:
         return fastapi.Response(content=str(x), status_code=500)
 
+
 #Endpoint to respond with a PastelID file, given a desired password:
 @router.get('/testnet_pastelid_file_dispenser/{desired_password}', tags=["High-Level Methods"])
 async def testnet_pastelid_file_dispenser(desired_password: str):
@@ -628,7 +630,7 @@ async def testnet_pastelid_file_dispenser(desired_password: str):
 @router.get('/get_parsed_sense_results_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
 async def get_parsed_sense_results_by_registration_ticket_txid(txid: str):
     try:
-        sense_data = await get_parsed_sense_results_by_registration_ticket_txid_func(txid)
+        sense_data, is_cached_response = await get_parsed_sense_results_by_registration_ticket_txid_func(txid)
         return sense_data
     except ValidationError as ve:
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
@@ -636,16 +638,39 @@ async def get_parsed_sense_results_by_registration_ticket_txid(txid: str):
         return fastapi.Response(content=str(x), status_code=500)
 
 
-@router.get('/get_raw_sense_results_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
-async def get_raw_sense_results_by_registration_ticket_txid(txid: str):
+@router.get('/get_sense_top_10_most_similar_images_table_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
+async def get_sense_top_10_most_similar_images_table_by_registration_ticket_txid(txid: str):
     try:
-        raw_sense_data = await get_raw_sense_results_by_registration_ticket_txid_func(txid)
-        return raw_sense_data
+        most_similar_images_data, is_cached_response = await get_sense_results_top_10_most_similar_images_by_registration_ticket_txid_func(txid)
+        return most_similar_images_data
     except ValidationError as ve:
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
     except Exception as x:
         return fastapi.Response(content=str(x), status_code=500)
 
+    
+@router.get('/get_publicly_accessible_cascade_file_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
+async def get_publicly_accessible_cascade_file_by_registration_ticket_txid(txid: str):
+    try:
+        decoded_response, original_file_name_string = await download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid)
+        content_disposition_string = f"attachment; filename={original_file_name_string}"
+        return StreamingResponse(io.BytesIO(decoded_response), media_type="application/octet-stream", headers={"Content-Disposition": content_disposition_string})
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+    
+
+@router.get('/get_raw_sense_results_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
+async def get_raw_sense_results_by_registration_ticket_txid(txid: str):
+    try:
+        raw_sense_data, is_cached_response = await get_raw_sense_results_by_registration_ticket_txid_func(txid)
+        return raw_sense_data
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
+    
 
 @router.get('/get_parsed_sense_results_by_image_file_hash/{image_file_hash}', tags=["OpenAPI Methods"])
 async def get_parsed_sense_results_by_image_file_hash(image_file_hash: str):
@@ -656,7 +681,7 @@ async def get_parsed_sense_results_by_image_file_hash(image_file_hash: str):
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
     except Exception as x:
         return fastapi.Response(content=str(x), status_code=500)
-
+   
 
 @router.get('/get_raw_sense_results_by_image_file_hash/{image_file_hash}', tags=["OpenAPI Methods"])
 async def get_raw_sense_results_by_image_file_hash(image_file_hash: str):
@@ -757,15 +782,15 @@ async def get_current_total_number_and_size_and_average_size_of_registered_casca
         return fastapi.Response(content=str(x), status_code=500) 
 
     
-# @router.get('/populate_database_with_all_sense_data', tags=["OpenAPI Methods"])
-# async def populate_database_with_all_sense_data(background_tasks: BackgroundTasks):
-#     try:
-#         background_tasks.add_task(populate_database_with_all_sense_data_func)
-#         return 'Started background task to populate database with all sense data...'
-#     except ValidationError as ve:
-#         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-#     except Exception as x:
-#         return fastapi.Response(content=str(x), status_code=500)
+@router.get('/populate_database_with_all_sense_data', tags=["OpenAPI Methods"])
+async def populate_database_with_all_sense_data(background_tasks: BackgroundTasks):
+    try:
+        background_tasks.add_task(populate_database_with_all_sense_data_func)
+        return 'Started background task to populate database with all sense data...'
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
 
 
 
