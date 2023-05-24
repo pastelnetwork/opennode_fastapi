@@ -3,6 +3,9 @@ import sqlite3
 import io
 import datetime
 from typing import List, Optional
+import cachetools
+import aiofiles
+from aiofiles.os import stat as aio_stat
 
 import sqlalchemy as sa
 from sqlalchemy import func, update, delete, desc
@@ -79,6 +82,11 @@ HTTP_TIMEOUT = 30
 logging.basicConfig()
 log = logging.getLogger("PastelRPC")
 
+# Initialize the LRU cache and cache directory
+cache_dir = "/home/ubuntu/cascade_opennode_fastapi_cache"
+#create cache directory if it doesn't exist
+os.makedirs(cache_dir, exist_ok=True)
+cache = cachetools.LRUCache(maxsize=5 * 1024 * 1024 * 1024)  # 5 GB
 
 # Set up real-time notification system
 class NotificationSystem:
@@ -635,9 +643,14 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
         original_file_name_string = str(txid)
     if is_publicly_accessible == True:
         with MyTimer():
+            if txid in cache: # Check if the file is already in cache
+                print(f"File is already cached, returning the cached file for txid {txid}...")
+                async with aiofiles.open(cache[txid], mode='rb') as f:
+                    decoded_response = await f.read()
+                return decoded_response, original_file_name_string
             print(f'Now attempting to download the file from Cascade API for txid {txid}...')
             async with httpx.AsyncClient() as client:
-                response = await client.get(request_url, headers=headers, timeout=300.0)    
+                response = await client.get(request_url, headers=headers, timeout=300.0)
             parsed_response = response.json()
             print(f'Got response from Cascade API for txid {txid}')
             if parsed_response['file'] is None:
@@ -645,7 +658,20 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
                 print(error_string)
                 return error_string, original_file_name_string
             decoded_response = base64.b64decode(parsed_response['file'])
-            print(f'Successfully decoded response from Cascade API for txid {txid}!')
+            print(f'Saving the file to cache for txid {txid}...')
+            cache_file_path = os.path.join(cache_dir, txid)
+            async with aiofiles.open(cache_file_path, mode='wb') as f:
+                await f.write(decoded_response)
+            cache[txid] = cache_file_path # Update LRU cache
+            total_size = 0
+            for f in cache.values(): # Check if the cache is full
+                stat_result = await aio_stat(f)
+                total_size += stat_result.st_size
+            if total_size > cache.maxsize: # Cache is full, remove the least recently used item from the cache
+                lru_txid, _ = cache.popitem()
+                os.remove(os.path.join(cache_dir, lru_txid))
+                print(f'Removed txid {lru_txid} from cache!')
+                print(f'Successfully decoded response from Cascade API for txid {txid}!')
     else:
         decoded_response = f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!'
         print(decoded_response)
