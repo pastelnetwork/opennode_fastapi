@@ -782,6 +782,28 @@ async def get_current_total_number_and_size_and_average_size_of_registered_casca
         return fastapi.Response(content=str(x), status_code=500) 
 
     
+@router.get('/get_usernames_from_pastelid/{pastelid}', tags=["OpenAPI Methods"])
+async def get_usernames_from_pastelid(pastelid : str):
+    try:
+        response = await get_usernames_from_pastelid_func(pastelid)
+        return JSONResponse(content={"pastelid_query": pastelid, "matching_usernames": response})
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)     
+
+
+@router.get('/get_pastelid_from_username/{username}', tags=["OpenAPI Methods"])
+async def get_pastelid_from_username(username : str):
+    try:
+        response = await get_pastelid_from_username_func(username)
+        return JSONResponse(content={"username_query": username, "matching_pastelid": response})
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)     
+
+    
 @router.get('/populate_database_with_all_sense_data', tags=["OpenAPI Methods"])
 async def populate_database_with_all_sense_data(background_tasks: BackgroundTasks):
     try:
