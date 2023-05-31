@@ -63,7 +63,7 @@ async def getblockchaininfo() -> str:
     try:
         global rpc_connection
         response_json = await rpc_connection.getblockchaininfo()
-        return response_json
+        return str(response_json)
     except ValidationError as ve:
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
     except Exception as x:
@@ -75,7 +75,7 @@ async def gettxoutsetinfo() -> str:
     try:
         global rpc_connection
         response_json = await rpc_connection.gettxoutsetinfo()
-        return response_json
+        return str(response_json)
     except ValidationError as ve:
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
     except Exception as x:
