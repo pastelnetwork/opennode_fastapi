@@ -369,7 +369,20 @@ async def get_pastel_blockchain_ticket_func(txid):
     global rpc_connection
     response_json = await rpc_connection.tickets('get', txid )
     if len(response_json) > 0:
-        activation_response_json = await rpc_connection.tickets('find', 'action-act', txid )
+        ticket_type_string = response_json['ticket']['type']
+        corresponding_reg_ticket_block_height = response_json['height']
+        corresponding_reg_ticket_block_info = await rpc_connection.getblock(str(corresponding_reg_ticket_block_height))
+        corresponding_reg_ticket_block_timestamp = corresponding_reg_ticket_block_info['time']
+        corresponding_reg_ticket_block_timestamp_utc_iso = datetime.datetime.utcfromtimestamp(corresponding_reg_ticket_block_timestamp).isoformat()
+        response_json['reg_ticket_block_timestamp_utc_iso'] = corresponding_reg_ticket_blockcorresponding_reg_ticket_block_timestamp_utc_iso_timestamp_iso
+        if ticket_type_string == 'nft-reg':
+            activation_response_json = await rpc_connection.tickets('find', 'act', txid )
+        elif ticket_type_string == 'action-reg':
+            activation_response_json = await rpc_connection.tickets('find', 'action-act', txid )
+        elif ticket_type_string == 'collection-reg':
+            activation_response_json = await rpc_connection.tickets('find', 'collection-act', txid )
+        else:
+            activation_response_json = f'No activation ticket needed for this ticket type ({ticket_type_string})'
         if len(activation_response_json) > 0:
             response_json['activation_ticket'] = activation_response_json
         else:
@@ -393,6 +406,33 @@ async def get_all_pastel_blockchain_tickets_func(verbose=0):
             if response is not None and len(response) > 0:
                 tickets_obj[current_ticket_type] = await get_df_json_from_tickets_list_rpc_response_func(response)
     return tickets_obj
+
+
+async def get_usernames_from_pastelid_func(pastelid):
+    global rpc_connection
+    response = await rpc_connection.tickets('list', 'username')
+    list_of_returned_usernames = []
+    if response is not None and len(response) > 0:
+        for idx, x in enumerate(response):
+            if response[idx]['ticket']['pastelID'] == pastelid:
+                list_of_returned_usernames.append(response[idx]['ticket']['username'])
+    if len(list_of_returned_usernames) > 0:
+        if len(list_of_returned_usernames) == 1:
+            return list_of_returned_usernames[0]
+        else:
+            return list_of_returned_usernames
+    else:
+        return 'Error! No username found for this pastelid'
+
+
+async def get_pastelid_from_username_func(username):
+    global rpc_connection
+    response = await rpc_connection.tickets('list', 'username')
+    if response is not None and len(response) > 0:
+        for idx, x in enumerate(response):
+            if response[idx]['ticket']['username'] == username:
+                return response[idx]['ticket']['pastelID']
+    return 'Error! No pastelid found for this username'
 
 
 async def testnet_pastelid_file_dispenser_func(password, verbose=0):
