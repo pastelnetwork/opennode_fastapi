@@ -159,7 +159,7 @@ def EncodeDecimal(o):
 
 
 class AsyncAuthServiceProxy:
-    def __init__(self, service_url, service_name=None, reconnect_timeout=2, reconnect_amount=2):
+    def __init__(self, service_url, service_name=None, reconnect_timeout=5, reconnect_amount=2):
         self.service_url = service_url
         self.service_name = service_name
         self.url = urlparse.urlparse(service_url)
