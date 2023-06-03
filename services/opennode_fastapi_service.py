@@ -666,6 +666,7 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
 
 
 async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str):
+    global cache
     start_time = time.time()
     requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
     request_url = f'http://localhost:8080/openapi/cascade/download?pid={requester_pastelid}&txid={txid}'
@@ -695,7 +696,7 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
                 return decoded_response, original_file_name_string
             print(f'Now attempting to download the file from Cascade API for txid {txid}...')
             async with httpx.AsyncClient() as client:
-                response = await client.get(request_url, headers=headers, timeout=300.0)
+                response = await client.get(request_url, headers=headers, timeout=500.0)
             parsed_response = response.json()
             print(f'Got response from Cascade API for txid {txid}')
             if parsed_response['file'] is None:
