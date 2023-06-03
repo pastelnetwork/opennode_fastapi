@@ -474,9 +474,9 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
         headers = {'Authorization': 'testpw123'}
         with MyTimer():
             async with httpx.AsyncClient() as client:
-                print(f'[Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Downloading raw Sense results from Sense API for txid: {txid}') 
+                print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Downloading raw Sense results from Sense API for txid: {txid}') 
                 response = await client.get(request_url, headers=headers, timeout=120.0)    
-                print(f'[Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading raw Sense results from Sense API for txid: {txid}; Took {response.elapsed.total_seconds()} seconds')
+                print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading raw Sense results from Sense API for txid: {txid}; Took {response.elapsed.total_seconds()} seconds')
             parsed_response = response.json()
             if parsed_response['file'] is None:
                 error_string = 'No file was returned from the Sense API!'
@@ -493,7 +493,6 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
             is_likely_dupe_list = list(rareness_scores_table_dict['is_likely_dupe'].values())
             detected_dupes_from_registered_images_on_pastel_file_hashes = [x for idx, x in enumerate(top_10_most_similar_registered_images_on_pastel_file_hashes) if is_likely_dupe_list[idx]]
             detected_dupes_from_registered_images_on_pastel_thumbnail_strings = [x[0][0] for idx, x in enumerate(list(rareness_scores_table_dict['thumbnail'].values())) if is_likely_dupe_list[idx]]
-            
             internet_rareness_json = final_response['internet_rareness']
             if internet_rareness_json['min_number_of_exact_matches_in_page'] == 0:
                 internet_rareness__b64_image_strings_of_in_page_matches = ''
@@ -584,7 +583,7 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
             async with db_session.create_async_session() as session:
                 session.add(sense_data)
                 await session.commit()
-            print(f'Finished generating parsed Sense data for txid {txid} and saving it to the local sqlite database! Took {time.time() - start_time} seconds in total.')
+            print(f'Finished generating parsed Sense data for txid {txid} and saving it to the local sqlite database! Took {round(time.time() - start_time, 2)} seconds in total.')
             return sense_data, is_cached_response
 
 
@@ -640,9 +639,9 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
         headers = {'Authorization': 'testpw123'}
         with MyTimer():
             async with httpx.AsyncClient() as client:
-                print(f'[Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Downloading raw Sense results from Sense API for txid: {txid}') 
+                print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Downloading raw Sense results from Sense API for txid: {txid}') 
                 response = await client.get(request_url, headers=headers, timeout=120.0)    
-                print(f'[Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading raw Sense results from Sense API for txid: {txid}; Took {response.elapsed.total_seconds()} seconds')
+                print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading raw Sense results from Sense API for txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
             parsed_response = response.json()
             if parsed_response['file'] is None:
                 error_string = 'No file was returned from the Sense API!'
@@ -660,7 +659,6 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
             raw_sense_data.raw_sense_data_json = decoded_response
             corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(txid)            
             raw_sense_data.corresponding_pastel_blockchain_ticket_data = str(corresponding_pastel_blockchain_ticket_data)
-            
             async with db_session.create_async_session() as session:
                 session.add(raw_sense_data)
                 await session.commit()
