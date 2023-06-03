@@ -77,7 +77,7 @@ else:
     parent.nice(19)
 
 USER_AGENT = "AuthServiceProxy/0.1"
-HTTP_TIMEOUT = 30
+HTTP_TIMEOUT = 90
 
 logging.basicConfig()
 log = logging.getLogger("PastelRPC")
@@ -159,7 +159,7 @@ def EncodeDecimal(o):
 
 
 class AsyncAuthServiceProxy:
-    def __init__(self, service_url, service_name=None, reconnect_timeout=5, reconnect_amount=2):
+    def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2):
         self.service_url = service_url
         self.service_name = service_name
         self.url = urlparse.urlparse(service_url)
@@ -374,7 +374,7 @@ async def get_pastel_blockchain_ticket_func(txid):
         corresponding_reg_ticket_block_info = await rpc_connection.getblock(str(corresponding_reg_ticket_block_height))
         corresponding_reg_ticket_block_timestamp = corresponding_reg_ticket_block_info['time']
         corresponding_reg_ticket_block_timestamp_utc_iso = datetime.datetime.utcfromtimestamp(corresponding_reg_ticket_block_timestamp).isoformat()
-        response_json['reg_ticket_block_timestamp_utc_iso'] = corresponding_reg_ticket_blockcorresponding_reg_ticket_block_timestamp_utc_iso_timestamp_iso
+        response_json['reg_ticket_block_timestamp_utc_iso'] = corresponding_reg_ticket_block_timestamp_utc_iso
         if ticket_type_string == 'nft-reg':
             activation_response_json = await rpc_connection.tickets('find', 'act', txid )
         elif ticket_type_string == 'action-reg':
@@ -459,6 +459,7 @@ async def testnet_pastelid_file_dispenser_func(password, verbose=0):
 
 
 async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -> OpenAPISenseData:
+    start_time = time.time()
     async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
         query = select(OpenAPISenseData).filter(OpenAPISenseData.sense_registration_ticket_txid == txid)
         result = await session.execute(query)
@@ -473,7 +474,9 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
         headers = {'Authorization': 'testpw123'}
         with MyTimer():
             async with httpx.AsyncClient() as client:
-                response = await client.get(request_url, headers=headers, timeout=60.0)    
+                print(f'[Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Downloading raw Sense results from Sense API for txid: {txid}') 
+                response = await client.get(request_url, headers=headers, timeout=120.0)    
+                print(f'[Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading raw Sense results from Sense API for txid: {txid}; Took {response.elapsed.total_seconds()} seconds')
             parsed_response = response.json()
             if parsed_response['file'] is None:
                 error_string = 'No file was returned from the Sense API!'
@@ -581,6 +584,7 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
             async with db_session.create_async_session() as session:
                 session.add(sense_data)
                 await session.commit()
+            print(f'Finished generating parsed Sense data for txid {txid} and saving it to the local sqlite database! Took {time.time() - start_time} seconds in total.')
             return sense_data, is_cached_response
 
 
@@ -599,7 +603,7 @@ async def get_sense_results_top_10_most_similar_images_by_registration_ticket_tx
         headers = {'Authorization': 'testpw123'}
         with MyTimer():
             async with httpx.AsyncClient() as client:
-                response = await client.get(request_url, headers=headers, timeout=60.0)    
+                response = await client.get(request_url, headers=headers, timeout=120.0)    
             parsed_response = response.json()
             if parsed_response['file'] is None:
                 error_string = 'No file was returned from the Sense API!'
@@ -636,7 +640,9 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
         headers = {'Authorization': 'testpw123'}
         with MyTimer():
             async with httpx.AsyncClient() as client:
-                response = await client.get(request_url, headers=headers, timeout=60.0)    
+                print(f'[Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Downloading raw Sense results from Sense API for txid: {txid}') 
+                response = await client.get(request_url, headers=headers, timeout=120.0)    
+                print(f'[Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading raw Sense results from Sense API for txid: {txid}; Took {response.elapsed.total_seconds()} seconds')
             parsed_response = response.json()
             if parsed_response['file'] is None:
                 error_string = 'No file was returned from the Sense API!'
@@ -662,6 +668,7 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
 
 
 async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str):
+    start_time = time.time()
     requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
     request_url = f'http://localhost:8080/openapi/cascade/download?pid={requester_pastelid}&txid={txid}'
     headers = {'Authorization': 'testpw123'}
@@ -712,6 +719,7 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
                 os.remove(os.path.join(cache_dir, lru_txid))
                 print(f'Removed txid {lru_txid} from cache!')
                 print(f'Successfully decoded response from Cascade API for txid {txid}!')
+        print(f'Finished retrieving public Cascade file for txid {txid}! Took {time.time() - start_time} seconds in total.')
     else:
         decoded_response = f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!'
         print(decoded_response)
@@ -732,7 +740,6 @@ async def populate_database_with_all_sense_data_func():
             current_sense_data, is_cached_response__parsed = await get_parsed_sense_results_by_registration_ticket_txid_func(current_txid)
             current_raw_sense_data, is_cached_response__raw = await get_raw_sense_results_by_registration_ticket_txid_func(current_txid)
             current_most_similar_images_data, is_cached_response__most_similar_images = await get_sense_results_top_10_most_similar_images_by_registration_ticket_txid_func(current_txid)
-            
             if is_cached_response__parsed and is_cached_response__raw and is_cached_response__most_similar_images:
                 break
             else:
@@ -874,6 +881,38 @@ async def get_current_total_number_of_registered_sense_fingerprints_func():
     response = {'total_number_of_registered_sense_fingerprints': fingerprint_counter, 'as_of_datetime_utc_string': current_datetime_utc_string, 'as_of_timestamp': timestamp}
     return response
 
+
+async def get_all_registration_ticket_txids_corresponding_to_a_collection_ticket_txid_func(collection_ticket_txid: str):
+    global rpc_connection
+    ticket_dict = await get_pastel_blockchain_ticket_func(collection_ticket_txid)
+    ticket_type_string = ticket_dict['ticket']['type']
+    if ticket_type_string == 'collection-reg':
+        activation_ticket_data = ticket_dict['activation_ticket'] 
+        item_type = ticket_dict['ticket']['collection_ticket']['item_type']
+    elif ticket_type_string == 'collection-act':
+        activation_ticket_data = ticket_dict
+        item_type = ''
+    else:
+        error_string = 'The ticket type is neither collection-reg nor collection-act'
+        print(error_string)
+        return error_string
+    activation_ticket_txid = activation_ticket_data['txid']
+    if item_type == 'sense':
+        response_json = await rpc_connection.tickets('find', 'action', activation_ticket_txid )
+    elif item_type == 'nft':
+        response_json = await rpc_connection.tickets('find', 'nft', activation_ticket_txid )
+    elif item_type == '':
+        try:
+            response_json = await rpc_connection.tickets('find', 'action', activation_ticket_txid )
+        except:
+            try:
+                response_json = await rpc_connection.tickets('find', 'nft', activation_ticket_txid )
+            except:
+                response_json = 'Unable to find the activation ticket in the blockchain'
+    else:
+        response_json = f'The txid given ({activation_ticksense_collection_ticket_txidet_txid}) is not a valid activation ticket txid for a collection ticket'
+    return response_json
+        
 
 async def get_current_total_number_and_size_and_average_size_of_registered_cascade_files_func():
     tickets_obj = await get_all_pastel_blockchain_tickets_func()
