@@ -475,7 +475,7 @@ async def get_parsed_sense_results_by_registration_ticket_txid_func(txid: str) -
         with MyTimer():
             async with httpx.AsyncClient() as client:
                 print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Downloading raw Sense results from Sense API for txid: {txid}') 
-                response = await client.get(request_url, headers=headers, timeout=120.0)    
+                response = await client.get(request_url, headers=headers, timeout=500.0)    
                 print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading raw Sense results from Sense API for txid: {txid}; Took {response.elapsed.total_seconds()} seconds')
             parsed_response = response.json()
             if parsed_response['file'] is None:
@@ -602,7 +602,7 @@ async def get_sense_results_top_10_most_similar_images_by_registration_ticket_tx
         headers = {'Authorization': 'testpw123'}
         with MyTimer():
             async with httpx.AsyncClient() as client:
-                response = await client.get(request_url, headers=headers, timeout=120.0)    
+                response = await client.get(request_url, headers=headers, timeout=500.0)    
             parsed_response = response.json()
             if parsed_response['file'] is None:
                 error_string = 'No file was returned from the Sense API!'
@@ -640,7 +640,7 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
         with MyTimer():
             async with httpx.AsyncClient() as client:
                 print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Downloading raw Sense results from Sense API for txid: {txid}') 
-                response = await client.get(request_url, headers=headers, timeout=120.0)    
+                response = await client.get(request_url, headers=headers, timeout=500.0)    
                 print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading raw Sense results from Sense API for txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
             parsed_response = response.json()
             if parsed_response['file'] is None:
