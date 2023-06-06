@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSessio
 from fastapi import BackgroundTasks, Depends, Body
 
 from data import db_session
-from data.opennode_fastapi import OpenNodeFastAPIRequests, OpenAPISenseData, OpenAPIRawSenseData, PastelBlockData, PastelAddressData, PastelTransactionData, PastelTransactionInputData, PastelTransactionOutputData, OpenAPISenseTop10MostSimilarImagesData
+from data.opennode_fastapi import OpenNodeFastAPIRequests, OpenAPISenseData, OpenAPIRawSenseData, PastelBlockData, PastelAddressData, PastelTransactionData, PastelTransactionInputData, PastelTransactionOutputData, OpenAPISenseTop10MostSimilarImagesData, CascadeCacheFileLocks
 import os
 import sys
 import time
@@ -87,6 +87,19 @@ cache_dir = "/home/ubuntu/cascade_opennode_fastapi_cache"
 #create cache directory if it doesn't exist
 os.makedirs(cache_dir, exist_ok=True)
 cache = cachetools.LRUCache(maxsize=5 * 1024 * 1024 * 1024)  # 5 GB
+
+async def load_cache(): # Populate cache from the existing files in the cache directory
+    global cache
+    total_size = 0
+    for filename in os.listdir(cache_dir):
+        file_path = os.path.join(cache_dir, filename)
+        if os.path.isfile(file_path):
+            stat_result = await aio_stat(file_path)
+            total_size += stat_result.st_size
+            if total_size <= cache.maxsize:  # Ensure we don't exceed the cache size
+                cache[filename] = file_path
+            else:
+                break  # Stop if we've reached the cache size limit
 
 # Set up real-time notification system
 class NotificationSystem:
@@ -667,6 +680,7 @@ async def get_raw_sense_results_by_registration_ticket_txid_func(txid: str) -> O
 
 async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str):
     global cache
+    await load_cache()
     start_time = time.time()
     requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
     request_url = f'http://localhost:8080/openapi/cascade/download?pid={requester_pastelid}&txid={txid}'
@@ -689,16 +703,37 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
         original_file_name_string = str(txid)
     if is_publicly_accessible == True:
         with MyTimer():
-            if txid in cache: # Check if the file is already in cache
+            if txid in cache and os.path.exists(cache[txid]):  # Check if the file is already in cache and exists in the cache_dir
                 print(f"File is already cached, returning the cached file for txid {txid}...")
                 async with aiofiles.open(cache[txid], mode='rb') as f:
                     decoded_response = await f.read()
-                return decoded_response, original_file_name_string
+                return decoded_response, original_file_name_string            
             print(f'Now attempting to download the file from Cascade API for txid {txid}...')
-            async with httpx.AsyncClient() as client:
-                response = await client.get(request_url, headers=headers, timeout=500.0)
-            parsed_response = response.json()
-            print(f'Got response from Cascade API for txid {txid}')
+            async with db_session.create_async_session() as session:
+                lock_exists = await session.get(CascadeCacheFileLocks, txid)
+                if lock_exists:
+                    print(f"Download of file {txid} is already in progress, skipping...")
+                    return
+                else:
+                    new_lock = CascadeCacheFileLocks(txid=txid)
+                    session.add(new_lock)
+                    await session.commit()            
+            try:
+                async with httpx.AsyncClient() as client:
+                    async with client.stream('GET', request_url, headers=headers, timeout=500.0) as response:
+                        body = await response.aread()  # async read
+                        parsed_response = json.loads(body.decode())  # parse JSON
+                print(f'Got response from Cascade API for txid {txid}')
+                async with db_session.create_async_session() as session:
+                    lock_exists = await session.get(CascadeCacheFileLocks, txid)
+                    await session.delete(lock_exists)
+                    await session.commit()         
+            except Exception as e:
+                print(f'An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {e} Deleting the lock and returning...')
+                async with db_session.create_async_session() as session:
+                    lock_exists = await session.get(CascadeCacheFileLocks, txid)
+                    await session.delete(lock_exists)
+                    await session.commit()                
             if parsed_response['file'] is None:
                 error_string = 'No file was returned from the Cascade API!'
                 print(error_string)
@@ -719,6 +754,10 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
                 print(f'Removed txid {lru_txid} from cache!')
                 print(f'Successfully decoded response from Cascade API for txid {txid}!')
         print(f'Finished retrieving public Cascade file for txid {txid}! Took {time.time() - start_time} seconds in total.')
+        async with db_session.create_async_session() as session:
+            lock_exists = await session.get(CascadeCacheFileLocks, txid)
+            await session.delete(lock_exists)
+            await session.commit()                    
     else:
         decoded_response = f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!'
         print(decoded_response)
@@ -734,7 +773,8 @@ async def populate_database_with_all_sense_data_func():
     list_of_known_bad_txids_to_skip = ['296df4ad6ac126794d0981ad04a2ed6b42364659a7d8a13c40ebf397744001c5',
                                        'ce1dd0a4f42050445a81fb6dbc5f4fd3a63af4b611fd9e05c25d2eb1e4beefab']
     list_of_sense_registration_ticket_txids = [x for x in list_of_sense_registration_ticket_txids if x not in list_of_known_bad_txids_to_skip]
-    for current_txid in list_of_sense_registration_ticket_txids[::-1]:
+    random.shuffle(list_of_sense_registration_ticket_txids)
+    for current_txid in list_of_sense_registration_ticket_txids:
         try:
             current_sense_data, is_cached_response__parsed = await get_parsed_sense_results_by_registration_ticket_txid_func(current_txid)
             current_raw_sense_data, is_cached_response__raw = await get_raw_sense_results_by_registration_ticket_txid_func(current_txid)
