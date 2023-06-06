@@ -779,10 +779,6 @@ async def populate_database_with_all_sense_data_func():
             current_sense_data, is_cached_response__parsed = await get_parsed_sense_results_by_registration_ticket_txid_func(current_txid)
             current_raw_sense_data, is_cached_response__raw = await get_raw_sense_results_by_registration_ticket_txid_func(current_txid)
             current_most_similar_images_data, is_cached_response__most_similar_images = await get_sense_results_top_10_most_similar_images_by_registration_ticket_txid_func(current_txid)
-            if is_cached_response__parsed and is_cached_response__raw and is_cached_response__most_similar_images:
-                break
-            else:
-                print(f'Processing sense registration ticket with TXID: {current_txid}')
         except Exception as e:
             pass
 
