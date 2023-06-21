@@ -557,14 +557,14 @@ async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: s
         try:
             internet_rareness_summary_table_dict = json.loads(internet_rareness_summary_table_json.encode('utf-8').decode('unicode_escape'))
         except Exception as e:
-            print(f"Encountered an error while trying to parse internet_rareness_summary_table_json for txid {txid}: {e}")
+            print(f"Encountered an error while trying to parse internet_rareness_summary_table_json for txid {txid} and type {raw_dd_service_data.ticket_type}: {e}")
             internet_rareness_summary_table_dict = dirtyjson.loads(internet_rareness_summary_table_json.replace('\\"', '"').replace('\/', '/'))
         internet_rareness_summary_table_df = pd.DataFrame.from_records(internet_rareness_summary_table_dict)
         alternative_rare_on_internet_dict_as_json = str(zstd.decompress(base64.b64decode(internet_rareness_json['alternative_rare_on_internet_dict_as_json_compressed_b64'])))[2:-1]
         try:
             alternative_rare_on_internet_dict = json.loads(alternative_rare_on_internet_dict_as_json.encode('utf-8').decode('unicode_escape'))
         except Exception as e:
-            print(f"Encountered an error while trying to parse alternative_rare_on_internet_dict_as_json for txid {txid}: {e}")
+            print(f"Encountered an error while trying to parse alternative_rare_on_internet_dict_as_json for txid {txid} and type {raw_dd_service_data.ticket_type}: {e}")
             alternative_rare_on_internet_dict = dirtyjson.loads(alternative_rare_on_internet_dict_as_json.replace('\\"', '"').replace('\/', '/').replace('\\n', ' '))
         alternative_rare_on_internet_dict_summary_table_df = pd.DataFrame.from_records(alternative_rare_on_internet_dict)
         parsed_dd_service_data = ParsedDDServiceData()
