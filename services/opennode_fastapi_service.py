@@ -472,6 +472,8 @@ async def testnet_pastelid_file_dispenser_func(password, verbose=0):
 
 
 async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str) -> RawDDServiceData:
+    #To clear out the raw_dd_service_data table of any nft type tickets, run:
+    # sqlite3 /home/ubuntu/opennode_fastapi/db/opennode_fastapi.sqlite "DELETE FROM raw_dd_service_data WHERE ticket_type='nft';"    
     async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
         query = select(RawDDServiceData).filter(RawDDServiceData.registration_ticket_txid == txid)
         result = await session.execute(query)
@@ -495,16 +497,16 @@ async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str)
         if ticket_type == 'sense':
             request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
         elif ticket_type == 'nft':
-            request_url = f'http://localhost:8080/nfts/get_dd_results?pid={requester_pastelid}&txid={txid}'
+            request_url = f'http://localhost:8080/nfts/get_dd_result_file?pid={requester_pastelid}&txid={txid}'
         else:
             error_string = f'Invalid ticket type for txid {txid}! Ticket type must be either "sense" or "nft"!'
             print(error_string)
             return error_string, is_cached_response        
         headers = {'Authorization': 'testpw123'}
         async with httpx.AsyncClient() as client:
-            print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Downloading Raw DD-Service results for txid: {txid} and ticket type {ticket_type}...') 
+            print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}...') 
             response = await client.get(request_url, headers=headers, timeout=500.0)    
-            print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading Raw DD-Service results for txid: {txid} and ticket type {ticket_type}; Took {round(response.elapsed.total_seconds(),2)} seconds')
+            print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading Raw DD-Service results for ticket type {ticket_type} and txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
         parsed_response = response.json()
         if parsed_response['file'] is None:
             error_string = f'No file was returned from the {ticket_type} API!'
@@ -577,7 +579,10 @@ async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: s
         parsed_dd_service_data.collection_name_string = str(final_response_df['collection_name_string'][0])
         parsed_dd_service_data.open_api_group_id_string = str(final_response_df['open_api_group_id_string'][0])
         parsed_dd_service_data.does_not_impact_the_following_collection_strings = str(final_response_df['does_not_impact_the_following_collection_strings'][0])
-        parsed_dd_service_data.overall_rareness_score = final_response_df['overall_rareness_score '][0]
+        try:
+            parsed_dd_service_data.overall_rareness_score = final_response_df['overall_rareness_score'][0]
+        except:
+            parsed_dd_service_data.overall_rareness_score = final_response_df['overall_rareness_score '][0]
         parsed_dd_service_data.group_rareness_score = final_response_df['group_rareness_score'][0]
         parsed_dd_service_data.open_nsfw_score = final_response_df['open_nsfw_score'][0] 
         parsed_dd_service_data.alternative_nsfw_scores = str(final_response_df['alternative_nsfw_scores'][0])
@@ -612,7 +617,7 @@ async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: s
         async with db_session.create_async_session() as session:
             session.add(parsed_dd_service_data)
             await session.commit()
-        print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished generating Parsed DD-Service data for txid {txid} (ticket type {str(parsed_dd_service_data.ticket_type)}) and saving it to the local sqlite database! Took {round(time.time() - start_time, 2)} seconds in total.')
+        print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished generating Parsed DD-Service data for ticket type {str(parsed_dd_service_data.ticket_type)} and txid {txid} and saving it to the local sqlite database! Took {round(time.time() - start_time, 2)} seconds in total.')
         return parsed_dd_service_data, is_cached_response
 
 
@@ -710,17 +715,22 @@ async def populate_database_with_all_dd_service_data_func():
     nft_ticket_df = pd.DataFrame(nft_ticket_dict).T
     nft_ticket_df_filtered = nft_ticket_df.drop_duplicates(subset=['txid'])
     list_of_sense_registration_ticket_txids = sense_ticket_df_filtered['txid'].values.tolist()
-    list_of_known_bad_sense_txids_to_skip = []
+    list_of_known_bad_sense_txids_to_skip = ['7ea866ccedb38e071d3e62a2e3db42d3f157c73021b6639aa4f70fed55714a35',
+                                             'f9add8cf8e2f4e7cd6fcf91936321dc97cdcd72cafb30bc9378507d0ec6dad2d',
+                                             'e6069246bde90778d66ed56f695d02523e18d34adf2ddbda98e6cf65d9212ac2',
+                                             'f8f3614082faa30891fd5eedfeb94435172e71269c13ec4f2d9b79c45346d3ca',
+                                             'e9a30efdf933000f122edf015b8cb986faf9e8b0bae6049ff8fafd51abf12759']
     list_of_sense_registration_ticket_txids = [x for x in list_of_sense_registration_ticket_txids if x not in list_of_known_bad_sense_txids_to_skip]
     list_of_nft_registration_ticket_txids = nft_ticket_df_filtered['txid'].values.tolist()
     list_of_known_bad_nft_txids_to_skip = []
     list_of_nft_registration_ticket_txids = [x for x in list_of_nft_registration_ticket_txids if x not in list_of_known_bad_nft_txids_to_skip]
+    # list_of_combined_registration_ticket_txids = list_of_sense_registration_ticket_txids
     list_of_combined_registration_ticket_txids = list_of_sense_registration_ticket_txids + list_of_nft_registration_ticket_txids
     random.shuffle(list_of_combined_registration_ticket_txids)
+    random_delay_in_seconds = random.randint(1, 15)
+    await asyncio.sleep(random_delay_in_seconds)
     for current_txid in list_of_combined_registration_ticket_txids:
         try:
-            random_delay_in_seconds = random.randint(1, 15)
-            await asyncio.sleep(random_delay_in_seconds)
             current_dd_service_data, is_cached_response = await get_parsed_dd_service_results_by_registration_ticket_txid_func(current_txid)
         except Exception as e:
             pass
