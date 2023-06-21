@@ -719,18 +719,25 @@ async def populate_database_with_all_dd_service_data_func():
                                              'f9add8cf8e2f4e7cd6fcf91936321dc97cdcd72cafb30bc9378507d0ec6dad2d',
                                              'e6069246bde90778d66ed56f695d02523e18d34adf2ddbda98e6cf65d9212ac2',
                                              'f8f3614082faa30891fd5eedfeb94435172e71269c13ec4f2d9b79c45346d3ca',
-                                             'e9a30efdf933000f122edf015b8cb986faf9e8b0bae6049ff8fafd51abf12759']
+                                             'e9a30efdf933000f122edf015b8cb986faf9e8b0bae6049ff8fafd51abf12759',
+                                             '6c3e9398d94cabf977a9194d59f9228708e8af3c773295e3c1fd6c56398ec052',
+                                             '45649ebbb2826ee7204143d08dc0c9069d2e315ac49641307197e16ea3073803',
+                                             '0b0e5cd76cfd76eb965b7276784640097655d508fbbe8adec2134262c0e3508a']
     list_of_sense_registration_ticket_txids = [x for x in list_of_sense_registration_ticket_txids if x not in list_of_known_bad_sense_txids_to_skip]
     list_of_nft_registration_ticket_txids = nft_ticket_df_filtered['txid'].values.tolist()
     list_of_known_bad_nft_txids_to_skip = []
     list_of_nft_registration_ticket_txids = [x for x in list_of_nft_registration_ticket_txids if x not in list_of_known_bad_nft_txids_to_skip]
-    # list_of_combined_registration_ticket_txids = list_of_sense_registration_ticket_txids
     list_of_combined_registration_ticket_txids = list_of_sense_registration_ticket_txids + list_of_nft_registration_ticket_txids
     random.shuffle(list_of_combined_registration_ticket_txids)
     random_delay_in_seconds = random.randint(1, 15)
     await asyncio.sleep(random_delay_in_seconds)
     for current_txid in list_of_combined_registration_ticket_txids:
         try:
+            corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(current_txid)
+            minimum_testnet_height_for_nft_tickets = 290000
+            if current_txid in list_of_nft_registration_ticket_txids:
+                if corresponding_pastel_blockchain_ticket_data['height'] <= minimum_testnet_height_for_nft_tickets:
+                    continue
             current_dd_service_data, is_cached_response = await get_parsed_dd_service_results_by_registration_ticket_txid_func(current_txid)
         except Exception as e:
             pass
