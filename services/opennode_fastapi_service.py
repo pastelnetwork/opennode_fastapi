@@ -658,7 +658,7 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
                 return
             else:
                 new_lock = CascadeCacheFileLocks(txid=txid)
-                session.add(new_lock)
+                session.add(new_lock) # To clear all the locks: sqlite3 db/opennode_fastapi.sqlite  "DELETE FROM cascade_cache_file_locks;"
                 await session.commit()            
         try:
             async with httpx.AsyncClient() as client:
@@ -676,11 +676,11 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
                 lock_exists = await session.get(CascadeCacheFileLocks, txid)
                 await session.delete(lock_exists)
                 await session.commit()                
-        if parsed_response['file'] is None:
-            error_string = 'No file was returned from the Cascade API!'
-            print(error_string)
-            return error_string, original_file_name_string
-        decoded_response = base64.b64decode(parsed_response['file'])
+        file_identifer = parsed_response['file_id']
+        file_download_url = f"http://localhost:8080/files/{file_identifer}"
+        async with httpx.AsyncClient() as client:
+            async with client.stream('GET', file_download_url, headers=headers, timeout=500.0) as response:        
+                decoded_response = await response.aread()  # async read
         print(f'Saving the file to cache for txid {txid}...')
         cache_file_path = os.path.join(cache_dir, txid)
         async with aiofiles.open(cache_file_path, mode='wb') as f:
@@ -722,7 +722,13 @@ async def populate_database_with_all_dd_service_data_func():
                                              'e9a30efdf933000f122edf015b8cb986faf9e8b0bae6049ff8fafd51abf12759',
                                              '6c3e9398d94cabf977a9194d59f9228708e8af3c773295e3c1fd6c56398ec052',
                                              '45649ebbb2826ee7204143d08dc0c9069d2e315ac49641307197e16ea3073803',
-                                             '0b0e5cd76cfd76eb965b7276784640097655d508fbbe8adec2134262c0e3508a']
+                                             '0b0e5cd76cfd76eb965b7276784640097655d508fbbe8adec2134262c0e3508a',
+                                             'dcde4cda732983d1da17647ad61fd9bdfdd0fc2376b3dffaca110652ae123037',
+                                             'b78ff2edbfde4678944bb817079fb409da25dcb2944890364d391b2f4f29ec56',
+                                             'ac0db6c7fdd248b1efd57f6e89ec4a83be12aa5488a941c1601830c339f0cfa8',
+                                             'dcde4cda732983d1da17647ad61fd9bdfdd0fc2376b3dffaca110652ae123037',
+                                             'c68b3964cdf087f1f6f8c3550d8b9ab850af16d58ba3eee577d9d0225add411f',
+                                             '2dfd4f84124ad420da69bd58c91135026633a91eb249ac5ce428a24b9a9fb46a']
     list_of_sense_registration_ticket_txids = [x for x in list_of_sense_registration_ticket_txids if x not in list_of_known_bad_sense_txids_to_skip]
     list_of_nft_registration_ticket_txids = nft_ticket_df_filtered['txid'].values.tolist()
     list_of_known_bad_nft_txids_to_skip = []
