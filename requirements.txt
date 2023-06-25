@@ -30,3 +30,4 @@ pyston_lite_autoload
 tabulate 
 cachetools
 aiofiles
+python-magic
