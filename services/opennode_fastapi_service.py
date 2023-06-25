@@ -2,7 +2,7 @@ import base64
 import sqlite3
 import io
 import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import cachetools
 import aiofiles
 from aiofiles.os import stat as aio_stat
@@ -14,11 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSessio
 from fastapi import BackgroundTasks, Depends, Body
 
 from data import db_session
-from data.opennode_fastapi import OpenNodeFastAPIRequests, ParsedDDServiceData, RawDDServiceData, PastelBlockData, PastelAddressData, PastelTransactionData, PastelTransactionInputData, PastelTransactionOutputData, CascadeCacheFileLocks
+from data.opennode_fastapi import OpenNodeFastAPIRequests, ParsedDDServiceData, RawDDServiceData, PastelBlockData, PastelAddressData, PastelTransactionData, PastelTransactionInputData, PastelTransactionOutputData, CascadeCacheFileLocks, BadTXID
 import os
 import sys
 import time
 import json
+import traceback
 import warnings
 import ipaddress
 import re
@@ -26,6 +27,7 @@ import random
 import itertools
 import requests
 import hashlib
+import magic
 import subprocess
 import asyncio
 import numpy as np
@@ -56,8 +58,6 @@ try:
     import urllib.parse as urlparse
 except ImportError:
     import urlparse
-# from tornado import gen, ioloop
-# from tornado.httpclient import AsyncHTTPClient, HTTPRequest, HTTPError
 import aiohttp
 from httpx import AsyncClient
 import logging
@@ -66,6 +66,8 @@ from sqlalchemy.orm import aliased
 from sqlalchemy import select
 from tabulate import tabulate
 
+
+#You must install libmagic with: sudo apt-get install libmagic-dev
 number_of_cpus = os.cpu_count()
 my_os = platform.system()
 loop = asyncio.get_event_loop()
@@ -486,47 +488,35 @@ async def testnet_pastelid_file_dispenser_func(password, verbose=0):
     return pastelid_pubkey, pastelid_data
 
 
-async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str) -> RawDDServiceData:
-    #To clear out the raw_dd_service_data table of any nft type tickets, run:
-    # sqlite3 /home/ubuntu/opennode_fastapi/db/opennode_fastapi.sqlite "DELETE FROM raw_dd_service_data WHERE ticket_type='nft';"    
-    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
-        query = select(RawDDServiceData).filter(RawDDServiceData.registration_ticket_txid == txid)
-        result = await session.execute(query)
-    results_already_in_local_db = result.scalar_one_or_none()
-    if results_already_in_local_db is not None:
-        is_cached_response = True
-        return results_already_in_local_db, is_cached_response
-    else: #If we don't have the results in our local sqlite database, then we need to download them from the Sense API:
-        corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(txid)
-        if 'ticket' in corresponding_pastel_blockchain_ticket_data.keys():            
-            if 'nft_ticket' in corresponding_pastel_blockchain_ticket_data['ticket'].keys():
-                ticket_type = 'nft'
-            elif 'action_ticket' in corresponding_pastel_blockchain_ticket_data['ticket'].keys():
-                ticket_type = 'sense'
-            else:
-                ticket_type = 'unknown'
-        else:
-            ticket_type = 'unknown'
-        is_cached_response = False
+async def get_raw_dd_service_results_from_local_db_func(txid: str) -> Optional[RawDDServiceData]:
+    try:
+        async with db_session.create_async_session() as session: 
+            query = select(RawDDServiceData).filter(RawDDServiceData.registration_ticket_txid == txid)
+            result = await session.execute(query)
+        return result.scalar_one_or_none()
+    except Exception as e:
+        log.error(f"Failed to get raw DD service results from local DB for txid {txid} with error: {e}")
+        raise e
+
+
+async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type: str, corresponding_pastel_blockchain_ticket_data: dict) -> RawDDServiceData:
+    try:
         requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
         if ticket_type == 'sense':
             request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
         elif ticket_type == 'nft':
             request_url = f'http://localhost:8080/nfts/get_dd_result_file?pid={requester_pastelid}&txid={txid}'
         else:
-            error_string = f'Invalid ticket type for txid {txid}! Ticket type must be either "sense" or "nft"!'
-            print(error_string)
-            return error_string, is_cached_response        
+            raise ValueError(f'Invalid ticket type for txid {txid}! Ticket type must be either "sense" or "nft"!')
+        
         headers = {'Authorization': 'testpw123'}
         async with httpx.AsyncClient() as client:
-            print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}...') 
+            log.info(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}...') 
             response = await client.get(request_url, headers=headers, timeout=500.0)    
-            print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading Raw DD-Service results for ticket type {ticket_type} and txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
+            log.info(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading Raw DD-Service results for ticket type {ticket_type} and txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
         parsed_response = response.json()
         if parsed_response['file'] is None:
-            error_string = f'No file was returned from the {ticket_type} API for txid {txid}!'
-            print(error_string)
-            return error_string
+            raise ValueError(f'No file was returned from the {ticket_type} API for txid {txid}!')
         decoded_response = base64.b64decode(parsed_response['file'])
         final_response = json.loads(decoded_response)
         final_response_df = pd.DataFrame.from_records([final_response])
@@ -539,111 +529,307 @@ async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str)
         raw_dd_service_data.pastel_block_height_when_request_submitted = str(final_response_df['pastel_block_height_when_request_submitted'][0])
         raw_dd_service_data.raw_dd_service_data_json = decoded_response
         raw_dd_service_data.corresponding_pastel_blockchain_ticket_data = str(corresponding_pastel_blockchain_ticket_data)
-        async with db_session.create_async_session() as session:
-            session.add(raw_dd_service_data)
-            await session.commit()
-        return raw_dd_service_data, is_cached_response
-        
-        
-async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: str) -> ParsedDDServiceData:
-    start_time = time.time()
-    async with db_session.create_async_session() as session: #First check if we already have the results in our local sqlite database:
-        query = select(ParsedDDServiceData).filter(ParsedDDServiceData.registration_ticket_txid == txid)
-        result = await session.execute(query)
-    results_already_in_local_db = result.scalar_one_or_none()
-    if results_already_in_local_db is not None:
-        is_cached_response = True
-        return results_already_in_local_db, is_cached_response
-    else: #If we don't have the results in our local sqlite database, then we need to download them:
-        raw_dd_service_data, _ = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid)
+        try:
+            async with db_session.create_async_session() as session:
+                session.add(raw_dd_service_data)
+                await session.commit()
+        except Exception as e:
+            log.error(f"Failed to save raw DD service results to local DB for txid {txid} with error: {e}")
+        return raw_dd_service_data
+    except Exception as e:
+        log.error(f"Failed to get raw DD service results from Sense API for txid {txid} with error: {e}")
+        raise e
+
+
+async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str) -> RawDDServiceData:
+    try:
+        #To clear out the raw_dd_service_data table of any nft type tickets, run:
+        # sqlite3 /home/ubuntu/opennode_fastapi/db/opennode_fastapi.sqlite "DELETE FROM raw_dd_service_data WHERE ticket_type='nft';"        
+        raw_dd_service_data = await get_raw_dd_service_results_from_local_db_func(txid)
+        if raw_dd_service_data is not None:  #First check if we already have the results in our local sqlite database:
+            is_cached_response = True
+            return raw_dd_service_data, is_cached_response #If we don't have the results in our local sqlite database, then we need to download them from the Sense A
+        corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(txid)
+        if 'ticket' in corresponding_pastel_blockchain_ticket_data.keys():            
+            if 'nft_ticket' in corresponding_pastel_blockchain_ticket_data['ticket'].keys():
+                ticket_type = 'nft'
+            elif 'action_ticket' in corresponding_pastel_blockchain_ticket_data['ticket'].keys():
+                ticket_type = 'sense'
+            else:
+                ticket_type = 'unknown'
+        else:
+            ticket_type = 'unknown'
+        raw_dd_service_data = await get_raw_dd_service_results_from_sense_api_func(txid, ticket_type, corresponding_pastel_blockchain_ticket_data)
         is_cached_response = False
-        final_response = json.loads(raw_dd_service_data.raw_dd_service_data_json)
-        final_response_df = pd.DataFrame.from_records([final_response])
-        #Now we have the raw results from the Sense walletnode API, but we want to parse out the various fields and generate valid results that turn into valid json, and also save the results to our local sqlite database:
-        rareness_scores_table_json_compressed_b64 = final_response['rareness_scores_table_json_compressed_b64']
-        rareness_scores_table_json = str(zstd.decompress(base64.b64decode(rareness_scores_table_json_compressed_b64)))[2:-1]
-        rareness_scores_table_dict = json.loads(rareness_scores_table_json)
-        top_10_most_similar_registered_images_on_pastel_file_hashes = list(rareness_scores_table_dict['image_hash'].values())
-        is_likely_dupe_list = list(rareness_scores_table_dict['is_likely_dupe'].values())
-        detected_dupes_from_registered_images_on_pastel_file_hashes = [x for idx, x in enumerate(top_10_most_similar_registered_images_on_pastel_file_hashes) if is_likely_dupe_list[idx]]
-        detected_dupes_from_registered_images_on_pastel_thumbnail_strings = [x[0][0] for idx, x in enumerate(list(rareness_scores_table_dict['thumbnail'].values())) if is_likely_dupe_list[idx]]
-        internet_rareness_json = final_response['internet_rareness']
-        internet_rareness_summary_table_json = str(zstd.decompress(base64.b64decode(internet_rareness_json['rare_on_internet_summary_table_as_json_compressed_b64'])))[2:-1]
-        try:
-            internet_rareness_summary_table_dict = json.loads(internet_rareness_summary_table_json.encode('utf-8').decode('unicode_escape'))
-        except Exception as e:
-            print(f"Encountered an error while trying to parse internet_rareness_summary_table_json for txid {txid} and type {raw_dd_service_data.ticket_type}: {e}")
-            internet_rareness_summary_table_dict = dirtyjson.loads(internet_rareness_summary_table_json.replace('\\"', '"').replace('\/', '/'))
-        internet_rareness_summary_table_df = pd.DataFrame.from_records(internet_rareness_summary_table_dict)
-        alternative_rare_on_internet_dict_as_json = str(zstd.decompress(base64.b64decode(internet_rareness_json['alternative_rare_on_internet_dict_as_json_compressed_b64'])))[2:-1]
-        try:
-            alternative_rare_on_internet_dict = json.loads(alternative_rare_on_internet_dict_as_json.encode('utf-8').decode('unicode_escape'))
-        except Exception as e:
-            print(f"Encountered an error while trying to parse alternative_rare_on_internet_dict_as_json for txid {txid} and type {raw_dd_service_data.ticket_type}: {e}")
-            alternative_rare_on_internet_dict = dirtyjson.loads(alternative_rare_on_internet_dict_as_json.replace('\\"', '"').replace('\/', '/').replace('\\n', ' '))
-        alternative_rare_on_internet_dict_summary_table_df = pd.DataFrame.from_records(alternative_rare_on_internet_dict)
-        parsed_dd_service_data = ParsedDDServiceData()
+        return raw_dd_service_data, is_cached_response
+    except Exception as e:
+        log.error(f"Failed to get raw DD service results for txid {txid} with error: {e}")
+        raise e
+
+
+def decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(compressed_b64_string: str) -> str:
+    try:
+        decompressed_data = zstd.decompress(base64.b64decode(compressed_b64_string))
+        return decompressed_data.decode()
+    except Exception as e:
+        log.error(f"Encountered an error while trying to decompress and decode data: {e}")
+        return None
+
+
+def safe_json_loads_func(json_string: str) -> dict:
+    try:
+        loaded_json = json.loads(json_string)
+        return loaded_json
+    except Exception as e:
+        log.error(f"Encountered an error while trying to parse json_string: {e}")
+        loaded_json = dirtyjson.loads(json_string.replace('\\"', '"').replace('\/', '/').replace('\\n', ' '))
+        return loaded_json
+
+
+async def parse_raw_dd_service_data_func(raw_dd_service_data: RawDDServiceData) -> ParsedDDServiceData:
+    parsed_dd_service_data = ParsedDDServiceData()
+    try:
+        final_response = safe_json_loads_func(raw_dd_service_data.raw_dd_service_data_json)
+    except Exception as e:
+        log.error(f'Error loading raw_dd_service_data_json: {e}')
+        return parsed_dd_service_data
+    final_response_df = pd.DataFrame.from_records([final_response])
+    try:
+        rareness_scores_table_json = decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(final_response.get('rareness_scores_table_json_compressed_b64', ''))
+        rareness_scores_table_dict = safe_json_loads_func(rareness_scores_table_json)
+    except Exception as e:
+        log.error(f'Error processing rareness_scores_table_json: {e}')
+        return parsed_dd_service_data
+    top_10_most_similar_registered_images_on_pastel_file_hashes = list(rareness_scores_table_dict.get('image_hash', {}).values())
+    is_likely_dupe_list = list(rareness_scores_table_dict.get('is_likely_dupe', {}).values())
+    detected_dupes_from_registered_images_on_pastel_file_hashes = [x for idx, x in enumerate(top_10_most_similar_registered_images_on_pastel_file_hashes) if is_likely_dupe_list[idx]]
+    detected_dupes_from_registered_images_on_pastel_thumbnail_strings = [x[0][0] for idx, x in enumerate(list(rareness_scores_table_dict.get('thumbnail', {}).values())) if is_likely_dupe_list[idx]]
+    try:
+        internet_rareness_json = final_response.get('internet_rareness', {})
+        internet_rareness_summary_table_json = decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(internet_rareness_json.get('rare_on_internet_summary_table_as_json_compressed_b64', ''))
+        internet_rareness_summary_table_dict = safe_json_loads_func(internet_rareness_summary_table_json)
+    except Exception as e:
+        log.error(f'Error processing internet_rareness_summary_table_json: {e}')
+        return parsed_dd_service_data
+    internet_rareness_summary_table_df = pd.DataFrame.from_records(internet_rareness_summary_table_dict)
+    try:
+        alternative_rare_on_internet_dict_as_json = decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(internet_rareness_json.get('alternative_rare_on_internet_dict_as_json_compressed_b64', ''))
+        alternative_rare_on_internet_dict = safe_json_loads_func(alternative_rare_on_internet_dict_as_json)
+    except Exception as e:
+        log.error(f'Error processing alternative_rare_on_internet_dict_as_json: {e}')
+        return parsed_dd_service_data
+    alternative_rare_on_internet_dict_summary_table_df = pd.DataFrame.from_records(alternative_rare_on_internet_dict)
+    try:
         parsed_dd_service_data.ticket_type = raw_dd_service_data.ticket_type
-        parsed_dd_service_data.registration_ticket_txid = txid
-        parsed_dd_service_data.hash_of_candidate_image_file = final_response_df['hash_of_candidate_image_file'][0]
-        parsed_dd_service_data.pastel_id_of_submitter = final_response_df['pastel_id_of_submitter'][0]
-        parsed_dd_service_data.pastel_block_hash_when_request_submitted = final_response_df['pastel_block_hash_when_request_submitted'][0]
-        parsed_dd_service_data.pastel_block_height_when_request_submitted = str(final_response_df['pastel_block_height_when_request_submitted'][0])
-        parsed_dd_service_data.dupe_detection_system_version = str(final_response_df['dupe_detection_system_version'][0])
-        parsed_dd_service_data.candidate_image_thumbnail_webp_as_base64_string = str(final_response_df['candidate_image_thumbnail_webp_as_base64_string'][0])
-        parsed_dd_service_data.collection_name_string = str(final_response_df['collection_name_string'][0])
-        parsed_dd_service_data.open_api_group_id_string = str(final_response_df['open_api_group_id_string'][0])
-        parsed_dd_service_data.does_not_impact_the_following_collection_strings = str(final_response_df['does_not_impact_the_following_collection_strings'][0])
-        try:
-            parsed_dd_service_data.overall_rareness_score = final_response_df['overall_rareness_score'][0]
-        except:
-            parsed_dd_service_data.overall_rareness_score = final_response_df['overall_rareness_score '][0]
-        parsed_dd_service_data.group_rareness_score = final_response_df['group_rareness_score'][0]
-        parsed_dd_service_data.open_nsfw_score = final_response_df['open_nsfw_score'][0] 
-        parsed_dd_service_data.alternative_nsfw_scores = str(final_response_df['alternative_nsfw_scores'][0])
-        parsed_dd_service_data.utc_timestamp_when_request_submitted = final_response_df['utc_timestamp_when_request_submitted'][0]
-        parsed_dd_service_data.is_likely_dupe = str(final_response_df['is_likely_dupe'][0])
-        parsed_dd_service_data.is_rare_on_internet = str(final_response_df['is_rare_on_internet'][0])
-        parsed_dd_service_data.is_pastel_openapi_request = str(final_response_df['is_pastel_openapi_request'][0])
-        parsed_dd_service_data.is_invalid_sense_request = str(final_response_df['is_invalid_sense_request'][0])
-        parsed_dd_service_data.invalid_sense_request_reason = str(final_response_df['invalid_sense_request_reason'][0])
-        parsed_dd_service_data.similarity_score_to_first_entry_in_collection = float(final_response_df['similarity_score_to_first_entry_in_collection'][0])
-        parsed_dd_service_data.cp_probability = float(final_response_df['cp_probability'][0])
-        parsed_dd_service_data.child_probability = float(final_response_df['child_probability'][0])
-        parsed_dd_service_data.image_file_path = str(final_response_df['image_file_path'][0])
-        parsed_dd_service_data.image_fingerprint_of_candidate_image_file = str(final_response_df['image_fingerprint_of_candidate_image_file'][0])
-        parsed_dd_service_data.pct_of_top_10_most_similar_with_dupe_prob_above_25pct = float(final_response_df['pct_of_top_10_most_similar_with_dupe_prob_above_25pct'][0])
-        parsed_dd_service_data.pct_of_top_10_most_similar_with_dupe_prob_above_33pct = float(final_response_df['pct_of_top_10_most_similar_with_dupe_prob_above_33pct'][0])
-        parsed_dd_service_data.pct_of_top_10_most_similar_with_dupe_prob_above_50pct = float(final_response_df['pct_of_top_10_most_similar_with_dupe_prob_above_50pct'][0])
-        parsed_dd_service_data.internet_rareness__min_number_of_exact_matches_in_page = str(internet_rareness_json['min_number_of_exact_matches_in_page'])
-        parsed_dd_service_data.internet_rareness__earliest_available_date_of_internet_results = internet_rareness_json['earliest_available_date_of_internet_results']
-        parsed_dd_service_data.internet_rareness__b64_image_strings_of_in_page_matches = str(internet_rareness_summary_table_df['img_src_string'].values.tolist())
-        parsed_dd_service_data.internet_rareness__original_urls_of_in_page_matches = str(internet_rareness_summary_table_df['original_url'].values.tolist())
-        parsed_dd_service_data.internet_rareness__result_titles_of_in_page_matches = str(internet_rareness_summary_table_df['title'].values.tolist())
-        parsed_dd_service_data.internet_rareness__date_strings_of_in_page_matches = str(internet_rareness_summary_table_df['date_string'].values.tolist())
-        parsed_dd_service_data.internet_rareness__misc_related_images_as_b64_strings =  str(internet_rareness_summary_table_df['misc_related_image_as_b64_string'].values.tolist())
-        parsed_dd_service_data.internet_rareness__misc_related_images_url = str(internet_rareness_summary_table_df['misc_related_image_url'].values.tolist())
-        parsed_dd_service_data.alternative_rare_on_internet__number_of_similar_results = str(len(alternative_rare_on_internet_dict_summary_table_df))
-        parsed_dd_service_data.alternative_rare_on_internet__b64_image_strings = str(alternative_rare_on_internet_dict_summary_table_df['list_of_images_as_base64'].values.tolist())
-        parsed_dd_service_data.alternative_rare_on_internet__original_urls = str(alternative_rare_on_internet_dict_summary_table_df['list_of_href_strings'].values.tolist())
-        parsed_dd_service_data.alternative_rare_on_internet__google_cache_urls = str(alternative_rare_on_internet_dict_summary_table_df['list_of_image_src_strings'].values.tolist())
-        parsed_dd_service_data.alternative_rare_on_internet__alt_strings = str(alternative_rare_on_internet_dict_summary_table_df['list_of_image_alt_strings'].values.tolist())
+        parsed_dd_service_data.registration_ticket_txid = raw_dd_service_data.registration_ticket_txid
+        parsed_dd_service_data.hash_of_candidate_image_file = final_response_df.get('hash_of_candidate_image_file', [None])[0]
+        parsed_dd_service_data.pastel_id_of_submitter = final_response_df.get('pastel_id_of_submitter', [None])[0]
+        parsed_dd_service_data.pastel_block_hash_when_request_submitted = final_response_df.get('pastel_block_hash_when_request_submitted', [None])[0]
+        parsed_dd_service_data.pastel_block_height_when_request_submitted = str(final_response_df.get('pastel_block_height_when_request_submitted', [None])[0])
+        parsed_dd_service_data.dupe_detection_system_version = str(final_response_df.get('dupe_detection_system_version', [None])[0])
+        parsed_dd_service_data.candidate_image_thumbnail_webp_as_base64_string = str(final_response_df.get('candidate_image_thumbnail_webp_as_base64_string', [None])[0])
+        parsed_dd_service_data.collection_name_string = str(final_response_df.get('collection_name_string', [None])[0])
+        parsed_dd_service_data.open_api_group_id_string = str(final_response_df.get('open_api_group_id_string', [None])[0])
+        parsed_dd_service_data.does_not_impact_the_following_collection_strings = str(final_response_df.get('does_not_impact_the_following_collection_strings', [None])[0])
+        parsed_dd_service_data.overall_rareness_score = final_response_df.get('overall_rareness_score', final_response_df.get('overall_rareness_score ', [None]))[0]
+        parsed_dd_service_data.group_rareness_score = final_response_df.get('group_rareness_score', [None])[0]
+        parsed_dd_service_data.open_nsfw_score = final_response_df.get('open_nsfw_score', [None])[0] 
+        parsed_dd_service_data.alternative_nsfw_scores = str(final_response_df.get('alternative_nsfw_scores', [None])[0])
+        parsed_dd_service_data.utc_timestamp_when_request_submitted = final_response_df.get('utc_timestamp_when_request_submitted', [None])[0]
+        parsed_dd_service_data.is_likely_dupe = str(final_response_df.get('is_likely_dupe', [None])[0])
+        parsed_dd_service_data.is_rare_on_internet = str(final_response_df.get('is_rare_on_internet', [None])[0])
+        parsed_dd_service_data.is_pastel_openapi_request = str(final_response_df.get('is_pastel_openapi_request', [None])[0])
+        parsed_dd_service_data.is_invalid_sense_request = str(final_response_df.get('is_invalid_sense_request', [None])[0])
+        parsed_dd_service_data.invalid_sense_request_reason = str(final_response_df.get('invalid_sense_request_reason', [None])[0])
         parsed_dd_service_data.corresponding_pastel_blockchain_ticket_data = str(raw_dd_service_data.corresponding_pastel_blockchain_ticket_data)
+    except Exception as e:
+        log.error(f'Error filling in parsed_dd_service_data fields: {e}')
+        return parsed_dd_service_data
+    try:
+        parsed_dd_service_data.similarity_score_to_first_entry_in_collection = float(final_response_df.get('similarity_score_to_first_entry_in_collection', [None])[0])
+        parsed_dd_service_data.cp_probability = float(final_response_df.get('cp_probability', [None])[0])
+        parsed_dd_service_data.child_probability = float(final_response_df.get('child_probability', [None])[0])
+        parsed_dd_service_data.image_file_path = str(final_response_df.get('image_file_path', [None])[0])
+        parsed_dd_service_data.image_fingerprint_of_candidate_image_file = str(final_response_df.get('image_fingerprint_of_candidate_image_file', [None])[0])
+        parsed_dd_service_data.pct_of_top_10_most_similar_with_dupe_prob_above_25pct = float(final_response_df.get('pct_of_top_10_most_similar_with_dupe_prob_above_25pct', [None])[0])
+        parsed_dd_service_data.pct_of_top_10_most_similar_with_dupe_prob_above_33pct = float(final_response_df.get('pct_of_top_10_most_similar_with_dupe_prob_above_33pct', [None])[0])
+        parsed_dd_service_data.pct_of_top_10_most_similar_with_dupe_prob_above_50pct = float(final_response_df.get('pct_of_top_10_most_similar_with_dupe_prob_above_50pct', [None])[0])
+        parsed_dd_service_data.internet_rareness__min_number_of_exact_matches_in_page = str(internet_rareness_json.get('min_number_of_exact_matches_in_page', None))
+        parsed_dd_service_data.internet_rareness__earliest_available_date_of_internet_results = internet_rareness_json.get('earliest_available_date_of_internet_results', None)
+    except Exception as e:
+        log.error(f'Error filling in the next part of parsed_dd_service_data fields: {e}')
+        return parsed_dd_service_data
+    try:
+        parsed_dd_service_data.internet_rareness__b64_image_strings_of_in_page_matches = str(internet_rareness_summary_table_df.get('img_src_string', []).values.tolist())
+        parsed_dd_service_data.internet_rareness__original_urls_of_in_page_matches = str(internet_rareness_summary_table_df.get('original_url', []).values.tolist())
+        parsed_dd_service_data.internet_rareness__result_titles_of_in_page_matches = str(internet_rareness_summary_table_df.get('title', []).values.tolist())
+        parsed_dd_service_data.internet_rareness__date_strings_of_in_page_matches = str(internet_rareness_summary_table_df.get('date_string', []).values.tolist())
+        parsed_dd_service_data.internet_rareness__misc_related_images_as_b64_strings =  str(internet_rareness_summary_table_df.get('misc_related_image_as_b64_string', []).values.tolist())
+        parsed_dd_service_data.internet_rareness__misc_related_images_url = str(internet_rareness_summary_table_df.get('misc_related_image_url', []).values.tolist())
+        parsed_dd_service_data.alternative_rare_on_internet__number_of_similar_results = str(len(alternative_rare_on_internet_dict_summary_table_df))
+        parsed_dd_service_data.alternative_rare_on_internet__b64_image_strings = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_images_as_base64', []).values.tolist())
+        parsed_dd_service_data.alternative_rare_on_internet__original_urls = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_href_strings', []).values.tolist())
+        parsed_dd_service_data.alternative_rare_on_internet__google_cache_urls = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_image_src_strings', []).values.tolist())
+        parsed_dd_service_data.alternative_rare_on_internet__alt_strings = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_image_alt_strings', []).values.tolist())
+    except Exception as e:
+        log.error(f'Error filling in the final part of parsed_dd_service_data fields: {e}')
+        return parsed_dd_service_data
+    return parsed_dd_service_data
+
+
+async def check_for_parsed_dd_service_result_in_db_func(txid: str) -> Tuple[Optional[ParsedDDServiceData], bool]:
+    try:
+        async with db_session.create_async_session() as session:
+            query = select(ParsedDDServiceData).filter(ParsedDDServiceData.registration_ticket_txid == txid)
+            result = await session.execute(query)
+        results_already_in_local_db = result.scalar_one_or_none()
+        is_cached_response = results_already_in_local_db is not None
+        return results_already_in_local_db, is_cached_response
+    except Exception as e:
+        log.error(f'Error checking for parsed_dd_service_result in local sqlite database: {e}')
+        
+
+async def save_parsed_dd_service_data_to_db_func(parsed_dd_service_data):
+    try:    
         async with db_session.create_async_session() as session:
             session.add(parsed_dd_service_data)
             await session.commit()
-        print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished generating Parsed DD-Service data for ticket type {str(parsed_dd_service_data.ticket_type)} and txid {txid} and saving it to the local sqlite database! Took {round(time.time() - start_time, 2)} seconds in total.')
-        return parsed_dd_service_data, is_cached_response
+    except Exception as e:
+        log.error(f'Error saving parsed_dd_service_data to local sqlite database: {e}')
 
 
-async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str):
-    global cache
-    await load_cache()
-    start_time = time.time()
-    requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
-    request_url = f'http://localhost:8080/openapi/cascade/download?pid={requester_pastelid}&txid={txid}'
-    headers = {'Authorization': 'testpw123'}
-    is_publicly_accessible = True
+async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: str) -> ParsedDDServiceData:
+    try:    
+        start_time = time.time() #First check if we already have the results in our local sqlite database; if so, then return them:
+        parsed_dd_service_data, is_cached_response = await check_for_parsed_dd_service_result_in_db_func(txid)
+        if is_cached_response:
+            return parsed_dd_service_data, is_cached_response
+        else: #If we don't have the results in our local sqlite database, then we need to download the raw DD-Service data, parse it, and save it to the local sqlite database:
+            raw_dd_service_data, _ = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid)
+            is_cached_response = False
+            parsed_dd_service_data = await parse_raw_dd_service_data_func(raw_dd_service_data)
+            await save_parsed_dd_service_data_to_db_func(parsed_dd_service_data)
+            print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished generating Parsed DD-Service data for ticket type {str(parsed_dd_service_data.ticket_type)} and txid {txid} and saving it to the local sqlite database! Took {round(time.time() - start_time, 2)} seconds in total.')
+            return parsed_dd_service_data, is_cached_response
+    except Exception as e:
+        log.error(f'Error while executing `parsed_dd_service_results_by_registration_ticket_txid_func`: {e}')
+        
+        
+async def add_bad_txid_to_db_func(txid, type, reason):
+    try:
+        async with db_session.create_async_session() as session:
+            query = select(BadTXID).where(BadTXID.txid == txid)
+            result = await session.execute(query)
+            bad_txid_exists = result.scalars().first()
+            if bad_txid_exists is None:
+                new_bad_txid = BadTXID(txid=txid, ticket_type=type, reason_txid_is_bad=reason, failed_attempts=1,
+                                       next_attempt_time=datetime.datetime.now() + datetime.timedelta(days=1))
+                session.add(new_bad_txid)
+            else:
+                bad_txid_exists.failed_attempts += 1  # If this txid is already marked as bad, increment the attempt count and set the next attempt time
+                if bad_txid_exists.failed_attempts == 2:
+                    bad_txid_exists.next_attempt_time = datetime.datetime.now() + datetime.timedelta(days=3)
+                else:
+                    bad_txid_exists.next_attempt_time = datetime.datetime.now() + datetime.timedelta(days=1)
+            await session.commit()
+            if bad_txid_exists is None:
+                log.info(f"No BadTXID object found with txid: {txid}, creating a new one...")
+            else:
+                log.info(f"Updated existing BadTXID object with txid: {txid}, incrementing failed attempts count.")
+    except Exception as e:
+        log.error(f"Error while adding bad txid to DB. Error: {e}")
+        raise
+
+
+async def get_bad_txids_from_db_func(type):
+    try:
+        async with db_session.create_async_session() as session:
+            result = await session.execute(
+                select(BadTXID).where(BadTXID.ticket_type == type, BadTXID.failed_attempts >= 3,
+                                      BadTXID.next_attempt_time < datetime.datetime.now()))
+            bad_txids = result.scalars().all()
+        return [bad_tx.txid for bad_tx in bad_txids]
+    except Exception as e:
+        log.error(f"Error while getting bad txids from DB. Error: {e}")
+        raise
+
+
+async def check_and_update_cascade_ticket_bad_txid_func(txid: str, session):
+    try:
+        log.info("Executing check_and_update_cascade_ticket_bad_txid_func...")
+        query = select(BadTXID).where(BadTXID.txid == txid)
+        log.info("Executing query...")
+        result = await session.execute(query)
+        bad_txid_exists = result.scalars().first()
+        if bad_txid_exists:
+            log.info("Bad TXID exists.")
+            if datetime.datetime.now() < bad_txid_exists.next_attempt_time:
+                return f"Error: txid {txid} is marked as bad and has not reached its next attempt time.", ""
+            else:
+                log.info("Incrementing failed attempts.")
+                bad_txid_exists.failed_attempts += 1
+                if bad_txid_exists.failed_attempts == 3:
+                    bad_txid_exists.next_attempt_time = datetime.datetime.now() + datetime.timedelta(days=3)
+                else:
+                    bad_txid_exists.next_attempt_time = datetime.datetime.now() + datetime.timedelta(days=1)
+                await session.commit()
+        return None
+    except Exception as e:
+        log.error(f"Error in check_and_update_cascade_ticket_bad_txid_func. Error: {e}")
+        raise
+    
+    
+async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str):
+    lock_exists = await session.get(CascadeCacheFileLocks, txid)
+    if lock_exists:
+        log.warning(f"Download of file {txid} is already in progress, skipping...")
+        return None, None  # return tuple of None
+    else:
+        new_lock = CascadeCacheFileLocks(txid=txid)
+        session.add(new_lock)
+        await session.commit()
+
+    cache_file_path = None
+    decoded_response = None
+    try:
+        async with httpx.AsyncClient() as client:
+            async with client.stream('GET', request_url, headers=headers, timeout=500.0) as response:
+                body = await response.aread()  # async read
+                parsed_response = json.loads(body.decode())  # parse JSON
+        file_identifier = parsed_response['file_id']
+        file_download_url = f"http://localhost:8080/files/{file_identifier}"
+        async with httpx.AsyncClient() as client:
+            async with client.stream('GET', file_download_url, headers=headers, timeout=500.0) as response:
+                decoded_response = await response.aread()  # async read
+        cache_file_path = os.path.join(cache_dir, txid)
+        async with aiofiles.open(cache_file_path, mode='wb') as f:
+            await f.write(decoded_response)
+    except Exception as e:
+        log.error(f'An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {e} Deleting the lock and returning...')
+        lock_exists = await session.get(CascadeCacheFileLocks, txid)
+        if lock_exists:
+            await session.delete(lock_exists)
+            await session.commit()
+        await add_bad_txid_to_db_func(txid, 'cascade', str(e))
+        return f"Error: An exception occurred while downloading the file. The txid {txid} has been marked as bad.", ""
+    return cache_file_path, decoded_response
+
+
+async def check_and_manage_cascade_file_cache_func(txid: str, cache_file_path: str, decoded_response, cache, cache_dir: str):
+    cache[txid] = cache_file_path  # Update LRU cache
+    total_size = 0
+    for f in cache.values():  # Check if the cache is full
+        stat_result = await aio_stat(f)
+        total_size += stat_result.st_size
+    if total_size > cache.maxsize:  # Cache is full, remove the least recently used item from the cache
+        lru_txid, _ = cache.popitem()
+        os.remove(os.path.join(cache_dir, lru_txid))
+        log.info(f'Removed txid {lru_txid} from cache!')
+    log.info(f'Successfully decoded response from Cascade API for txid {txid}!')
+    return decoded_response
+
+
+async def get_cascade_original_file_metadata_func(txid: str):
     try:
         log.info(f'Attempting to get original file name from the Cascade blockchain ticket for registration txid {txid}...')
         ticket_response = await get_pastel_blockchain_ticket_func(txid)
@@ -651,74 +837,93 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
         api_ticket_str = action_ticket['api_ticket']
         correct_padding = len(api_ticket_str) % 4
         if correct_padding != 0:
-            api_ticket_str += '='* (4 - correct_padding)
-        api_ticket =  json.loads(base64.b64decode(api_ticket_str).decode('utf-8'))
+            api_ticket_str += '=' * (4 - correct_padding)
+        api_ticket = json.loads(base64.b64decode(api_ticket_str).decode('utf-8'))
         original_file_name_string = api_ticket['file_name']
         is_publicly_accessible = api_ticket['make_publicly_accessible']
-        log.info(f'Got original file name from the Cascade blockchain ticket: {original_file_name_string}')
-    except:
+        publicly_accessible_description_string = "publicly accessible" if is_publicly_accessible else "private"
+        base64_encoded_original_file_sha3_256_hash = api_ticket['data_hash']
+        original_file_sha3_256_hash = base64.b64decode(base64_encoded_original_file_sha3_256_hash).hex()
+        original_file_size_in_bytes = api_ticket['original_file_size_in_bytes']
+        original_file_mime_type = api_ticket['file_type']
+        log.info(f'Got original file name from the Cascade blockchain ticket: {original_file_name_string}: it is a {publicly_accessible_description_string} "{original_file_mime_type}" file of size {round(original_file_size_in_bytes/1024/1024,2)}mb and SHA3-256 hash "{original_file_sha3_256_hash}"')
+        return original_file_name_string, is_publicly_accessible, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type
+    except Exception as e:
         log.warning('Unable to get original file name from the Cascade blockchain ticket! Using txid instead as the default file name...')
-        original_file_name_string = str(txid)
-    if is_publicly_accessible == True:
-        if txid in cache and os.path.exists(cache[txid]):  # Check if the file is already in cache and exists in the cache_dir
-            log.info(f"File is already cached, returning the cached file for txid {txid}...")
-            async with aiofiles.open(cache[txid], mode='rb') as f:
-                decoded_response = await f.read()
-            return decoded_response, original_file_name_string            
-        log.info(f'Now attempting to download the file from Cascade API for txid {txid}...')
+        await add_bad_txid_to_db_func(txid, 'cascade', str(e))
+        return str(txid), False
+
+
+async def verify_downloaded_cascade_file_func(file_data, expected_hash, expected_size, expected_mime_type):
+    try:
+        sha3_256 = hashlib.sha3_256(file_data).hexdigest()
+        if sha3_256 != expected_hash:
+            error_msg = f'Hash mismatch: expected {expected_hash}, got {sha3_256}'
+            log.error(error_msg)
+            return error_msg
+        size = len(file_data)
+        if size != expected_size:
+            error_msg = f'Size mismatch: expected {expected_size} bytes, got {size} bytes'
+            log.error(error_msg)
+            return error_msg
+        mime_type = magic.from_buffer(file_data, mime=True)
+        if mime_type != expected_mime_type:
+            error_msg = f'MIME type mismatch: expected {expected_mime_type}, got {mime_type}'
+            log.error(error_msg)
+            return error_msg
+        log.info(f'File verification successful for expected_hash: {expected_hash}, expected_size: {expected_size} bytes, expected_mime_type: {expected_mime_type}')
+        return True
+    except Exception as e:
+        error_msg = f'An unexpected error occurred during file verification: {e}'
+        log.error(error_msg)
+        return error_msg
+    
+
+async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str):
+    global cache
+    log.info(f'Starting download process for txid {txid}.')
+    try:
+        await load_cache()
+        start_time = time.time()
+        requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
+        request_url = f'http://localhost:8080/openapi/cascade/download?pid={requester_pastelid}&txid={txid}'
+        headers = {'Authorization': 'testpw123'}
         async with db_session.create_async_session() as session:
-            lock_exists = await session.get(CascadeCacheFileLocks, txid)
-            if lock_exists:
-                log.warning(f"Download of file {txid} is already in progress, skipping...")
-                return
-            else:
-                new_lock = CascadeCacheFileLocks(txid=txid)
-                session.add(new_lock) 
-                await session.commit()            
-        try:
-            async with httpx.AsyncClient() as client:
-                async with client.stream('GET', request_url, headers=headers, timeout=500.0) as response:
-                    body = await response.aread()  # async read
-                    parsed_response = json.loads(body.decode())  # parse JSON
-            log.info(f'Got response from Cascade API for txid {txid}')
-            async with db_session.create_async_session() as session:
-                lock_exists = await session.get(CascadeCacheFileLocks, txid)
-                await session.delete(lock_exists)
-                await session.commit()         
-        except Exception as e:
-            log.error(f'An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {e} Deleting the lock and returning...')
-            async with db_session.create_async_session() as session:
-                lock_exists = await session.get(CascadeCacheFileLocks, txid)
-                await session.delete(lock_exists)
-                await session.commit()                
-        file_identifer = parsed_response['file_id']
-        file_download_url = f"http://localhost:8080/files/{file_identifer}"
-        async with httpx.AsyncClient() as client:
-            async with client.stream('GET', file_download_url, headers=headers, timeout=500.0) as response:        
-                decoded_response = await response.aread()  # async read
-        log.info(f'Saving the file to cache for txid {txid}...')
-        cache_file_path = os.path.join(cache_dir, txid)
-        async with aiofiles.open(cache_file_path, mode='wb') as f:
-            await f.write(decoded_response)
-        cache[txid] = cache_file_path # Update LRU cache
-        total_size = 0
-        for f in cache.values(): # Check if the cache is full
-            stat_result = await aio_stat(f)
-            total_size += stat_result.st_size
-        if total_size > cache.maxsize: # Cache is full, remove the least recently used item from the cache
-            lru_txid, _ = cache.popitem()
-            os.remove(os.path.join(cache_dir, lru_txid))
-            log.info(f'Removed txid {lru_txid} from cache!')
-            log.info(f'Successfully decoded response from Cascade API for txid {txid}!')
-        log.info(f'Finished retrieving public Cascade file for txid {txid}! Took {time.time() - start_time} seconds in total.')
-        async with db_session.create_async_session() as session:
-            lock_exists = await session.get(CascadeCacheFileLocks, txid)
-            await session.delete(lock_exists)
-            await session.commit()                    
-    else:
-        decoded_response = f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!'
-        log.warning(decoded_response)
-    return decoded_response, original_file_name_string
+            log.info('Checking if the txid is marked as bad...')
+            check_bad_txid_result = await check_and_update_cascade_ticket_bad_txid_func(txid, session)
+            if check_bad_txid_result:
+                log.warning(f'TXID {txid} is marked as bad.')
+                return check_bad_txid_result, ""
+            log.info('Getting original file metadata (i.e., file name, size, hash, and public accessibility status...')
+            try:
+                original_file_name_string, is_publicly_accessible, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type = await get_cascade_original_file_metadata_func(txid)
+            except Exception as e:
+                log.warning(f'An error occurred while fetching metadata for txid {txid}. Error: {e}')
+                original_file_name_string = txid  # Use txid as filename if we can't fetch metadata
+            if not is_publicly_accessible:
+                log.warning(f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!')
+                return f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!', ""
+            if txid in cache and os.path.exists(cache[txid]):  # Check if the file is already in cache and exists in the cache_dir
+                log.info(f"File is already cached, returning the cached file for txid {txid}...")
+                async with aiofiles.open(cache[txid], mode='rb') as f:
+                    decoded_response = await f.read()
+                return decoded_response, original_file_name_string
+            log.info(f'Now attempting to download the file from Cascade API for txid {txid}...')
+            cache_file_path, decoded_response = await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir)
+            if isinstance(decoded_response, str) and decoded_response.startswith("Error"):
+                log.error(f'An error occurred while downloading the file for txid {txid}. Error: {decoded_response}')
+                return decoded_response, ""
+            log.info('Checking and managing cache...')
+            decoded_response = await check_and_manage_cascade_file_cache_func(txid, cache_file_path, decoded_response, cache, cache_dir)
+            verification_result = await verify_downloaded_cascade_file_func(decoded_response, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type)
+            if verification_result is not True:
+                log.error(f'File verification failed for txid {txid}. Error: {verification_result}')
+                return verification_result, ""
+        log.info(f'Finished download process for txid {txid} in {time.time() - start_time} seconds.')
+        return decoded_response, original_file_name_string
+    except Exception as e:
+        log.error(f'An unexpected error occurred in download_publicly_accessible_cascade_file_by_registration_ticket_txid_func for txid {txid}. Error: {e}')
+        raise
 
 
 async def populate_database_with_all_dd_service_data_func():
@@ -730,39 +935,25 @@ async def populate_database_with_all_dd_service_data_func():
     nft_ticket_df = pd.DataFrame(nft_ticket_dict).T
     nft_ticket_df_filtered = nft_ticket_df.drop_duplicates(subset=['txid'])
     list_of_sense_registration_ticket_txids = sense_ticket_df_filtered['txid'].values.tolist()
-    list_of_known_bad_sense_txids_to_skip = ['7ea866ccedb38e071d3e62a2e3db42d3f157c73021b6639aa4f70fed55714a35',
-                                             'f9add8cf8e2f4e7cd6fcf91936321dc97cdcd72cafb30bc9378507d0ec6dad2d',
-                                             'e6069246bde90778d66ed56f695d02523e18d34adf2ddbda98e6cf65d9212ac2',
-                                             'f8f3614082faa30891fd5eedfeb94435172e71269c13ec4f2d9b79c45346d3ca',
-                                             'e9a30efdf933000f122edf015b8cb986faf9e8b0bae6049ff8fafd51abf12759',
-                                             '6c3e9398d94cabf977a9194d59f9228708e8af3c773295e3c1fd6c56398ec052',
-                                             '45649ebbb2826ee7204143d08dc0c9069d2e315ac49641307197e16ea3073803',
-                                             '0b0e5cd76cfd76eb965b7276784640097655d508fbbe8adec2134262c0e3508a',
-                                             'dcde4cda732983d1da17647ad61fd9bdfdd0fc2376b3dffaca110652ae123037',
-                                             'b78ff2edbfde4678944bb817079fb409da25dcb2944890364d391b2f4f29ec56',
-                                             'ac0db6c7fdd248b1efd57f6e89ec4a83be12aa5488a941c1601830c339f0cfa8',
-                                             'dcde4cda732983d1da17647ad61fd9bdfdd0fc2376b3dffaca110652ae123037',
-                                             'c68b3964cdf087f1f6f8c3550d8b9ab850af16d58ba3eee577d9d0225add411f',
-                                             '2dfd4f84124ad420da69bd58c91135026633a91eb249ac5ce428a24b9a9fb46a',
-                                             'b40ae53d019294ddb59de658c37876de580f870cef7f0fe1b6f80bec4076d303',
-                                             '0a63d2e33ac090483d97b1ccd02f084d67edcc7b1ceae623dcd1b7ad57f93df9']
-    list_of_sense_registration_ticket_txids = [x for x in list_of_sense_registration_ticket_txids if x not in list_of_known_bad_sense_txids_to_skip]
     list_of_nft_registration_ticket_txids = nft_ticket_df_filtered['txid'].values.tolist()
-    list_of_known_bad_nft_txids_to_skip = []
-    list_of_nft_registration_ticket_txids = [x for x in list_of_nft_registration_ticket_txids if x not in list_of_known_bad_nft_txids_to_skip]
     list_of_combined_registration_ticket_txids = list_of_sense_registration_ticket_txids + list_of_nft_registration_ticket_txids
     random.shuffle(list_of_combined_registration_ticket_txids)
     random_delay_in_seconds = random.randint(1, 15)
     await asyncio.sleep(random_delay_in_seconds)
     for current_txid in list_of_combined_registration_ticket_txids:
-        try:
+        try: # Before fetching, check if the current txid is already marked as bad
+            is_nft_ticket = current_txid in list_of_nft_registration_ticket_txids
+            ticket_type = 'nft' if is_nft_ticket else 'sense'
+            bad_txids = await get_bad_txids_from_db_func(ticket_type)
+            if current_txid in bad_txids: # If it is bad and has not reached its next attempt time, skip it
+                continue
             corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(current_txid)
             minimum_testnet_height_for_nft_tickets = 290000
-            if current_txid in list_of_nft_registration_ticket_txids:
-                if corresponding_pastel_blockchain_ticket_data['height'] <= minimum_testnet_height_for_nft_tickets:
-                    continue
+            if is_nft_ticket and corresponding_pastel_blockchain_ticket_data['height'] <= minimum_testnet_height_for_nft_tickets:
+                continue
             current_dd_service_data, is_cached_response = await get_parsed_dd_service_results_by_registration_ticket_txid_func(current_txid)
         except Exception as e:
+            await add_bad_txid_to_db_func(current_txid, ticket_type, str(e))
             pass
 
 
@@ -805,25 +996,35 @@ def parse_walletnode_log_data_func(log_data):
 def update_cascade_status_func(df):
     log_data = get_walletnode_log_data_func()
     parsed_df = parse_walletnode_log_data_func(log_data)
+    txid_log_dict = {}
     if not parsed_df.empty:
-        for txid in parsed_df['txid'].unique():
-            new_row = parsed_df[parsed_df['txid'] == txid].iloc[-1]
-            if txid in df['txid'].values:
-                df.loc[df['txid'] == txid, 'last_log_status'] = new_row['last_log_status']
-                if new_row['last_log_status'] == 'Start downloading':
-                    df.loc[df['txid'] == txid, 'datetime_started'] = new_row['log_datetime']
-                elif new_row['last_log_status'] == 'Finished downloading':
-                    df.loc[df['txid'] == txid, 'datetime_finished'] = new_row['log_datetime']
+        for idx, row in parsed_df.iterrows():
+            txid = row['txid']
+            if txid in txid_log_dict:
+                txid_log_dict[txid].append({'index': idx, 'datetime': row['log_datetime'], 'message': row['last_log_status']})
             else:
-                df = df.append(new_row)
-    return df
+                txid_log_dict[txid] = [{'index': idx, 'datetime': row['log_datetime'], 'message': row['last_log_status']}]
+            if txid in df['txid'].values:
+                df.loc[df['txid'] == txid, 'last_log_status'] = row['last_log_status']
+                if row['last_log_status'] == 'Start downloading':
+                    df.loc[df['txid'] == txid, 'datetime_started'] = row['log_datetime']
+                elif row['last_log_status'] == 'Finished downloading':
+                    df.loc[df['txid'] == txid, 'datetime_finished'] = row['log_datetime']
+            else:
+                new_row = row.to_dict()
+                new_row.pop('log_datetime', None) # Remove as these fields are not in the original df
+                df = df.append(new_row, ignore_index=True)
+    return df, txid_log_dict
 
 
 async def update_cascade_status_periodically_func(df):
+    txid_log_dict = {}
     while True:
-        df = update_cascade_status_func(df)
+        df, new_txid_log_dict = update_cascade_status_func(df)
+        txid_log_dict.update(new_txid_log_dict) # Update the txid_log_dict with new logs
         await asyncio.sleep(1)
-        
+    return df, txid_log_dict
+
 
 async def get_random_cascade_txids_func(n: int) -> List[str]:
     try:
@@ -848,6 +1049,7 @@ async def get_random_cascade_txids_func(n: int) -> List[str]:
                     accessible_txids.append(txid)
             except Exception as e:
                 log.error(f'An error occurred while checking if txid {txid} is publicly accessible! Error message: {e}')
+        accessible_txids = [x for x in accessible_txids if len(x) == 64 and x.isalnum()]
         if len(accessible_txids) < n:
             log.warning('Not enough publicly accessible TXIDs for the requested number. Returning all that were found.')
         return random.sample(accessible_txids, min(n, len(accessible_txids)))
@@ -881,8 +1083,10 @@ async def download_cascade_file_test_func(txid: str) -> dict:
 
 async def bulk_test_cascade_func(n: int):
     try:
+        datetime_test_started = datetime.datetime.now()
         log.info('Starting bulk test of cascade...')
         status_df = pd.DataFrame()
+        
         txids = await get_random_cascade_txids_func(n)
         log.info(f'Got {len(txids)} txids for testing.')
         update_task = asyncio.create_task(update_cascade_status_periodically_func(status_df))
@@ -891,9 +1095,10 @@ async def bulk_test_cascade_func(n: int):
         finished, unfinished = await asyncio.wait(download_tasks, timeout=300)
         update_task.cancel()
         log.info('All download tasks finished.')
-        status_df = update_task.result()
+        status_df, txid_log_dict = update_task.result()
         download_data = [t.result() for t in finished if t.result() is not None and 'txid' in t.result()]
         download_df = pd.DataFrame(download_data)
+        download_df['log_lines'] = download_df['txid'].map(txid_log_dict)        
         df = pd.merge(download_df, status_df, how='left', on='txid')
         log.info('Processing test results...')
         df['within_2_min'] = (df['datetime_finished'] - df['datetime_started']) <= pd.Timedelta(minutes=2)
@@ -911,6 +1116,15 @@ async def bulk_test_cascade_func(n: int):
         })
         summary_df.to_csv('cascade_bulk_download_test_results__summary.csv', index=False)
         log.info('Finished bulk test of cascade.')
+        df_dict = df.to_dict('records')
+        summary_df_dict = summary_df.to_dict('records')
+        combined_output_dict = {
+            'datetime_test_started': datetime_test_started,
+            'duration_of_test_in_seconds': (datetime.datetime.now() - datetime_test_started).total_seconds(),
+            'cascade_bulk_download_test_results__data': df_dict,
+            'cascade_bulk_download_test_results__summary': summary_df_dict
+        }
+        return combined_output_dict
     except Exception as e:
         log.error(f'Error occurred during the bulk test of cascade: {e}', exc_info=True)
 
