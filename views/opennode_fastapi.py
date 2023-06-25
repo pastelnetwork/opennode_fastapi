@@ -6,7 +6,7 @@ import io
 from typing import Union, Dict, Any
 
 import fastapi
-from fastapi import BackgroundTasks, Depends, Response
+from fastapi import BackgroundTasks, Depends, Response, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi_chameleon import template
 from starlette.requests import Request
@@ -816,13 +816,11 @@ async def populate_database_with_all_dd_service_data(background_tasks: Backgroun
 
 
 @router.get('/run_bulk_test_cascade/{num_downloads}', tags=["OpenAPI Methods"])
-async def run_bulk_test_cascade(num_downloads: int = 5):
+async def run_bulk_test_cascade(num_downloads: int = Query(5, description="Number of concurrent Cascade downloads to launch for test. Default is 5.")):
     try:
-        await bulk_test_cascade_func(num_downloads)
-        return {"message": "Test started successfully."}
+        combined_output_dict = await bulk_test_cascade_func(num_downloads)
+        return combined_output_dict
     except ValidationError as ve:
         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
     except Exception as x:
         return fastapi.Response(content=str(x), status_code=500)
-
-
