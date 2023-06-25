@@ -26,6 +26,7 @@ import random
 import itertools
 import requests
 import hashlib
+import subprocess
 import asyncio
 import numpy as np
 import pandas as pd
@@ -79,8 +80,18 @@ else:
 USER_AGENT = "AuthServiceProxy/0.1"
 HTTP_TIMEOUT = 90
 
-logging.basicConfig()
+#Setup logging:
 log = logging.getLogger("PastelRPC")
+log.setLevel(logging.INFO)
+fh = logging.FileHandler('opennode_fastapi_log.txt')
+fh.setLevel(logging.INFO)
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+fh.setFormatter(formatter)
+ch.setFormatter(formatter)
+log.addHandler(fh)
+log.addHandler(ch)
 
 # Initialize the LRU cache and cache directory
 cache_dir = "/home/ubuntu/cascade_opennode_fastapi_cache"
@@ -90,6 +101,7 @@ cache = cachetools.LRUCache(maxsize=5 * 1024 * 1024 * 1024)  # 5 GB
 
 async def load_cache(): # Populate cache from the existing files in the cache directory
     global cache
+    log.info('Starting to load cache.')
     total_size = 0
     for filename in os.listdir(cache_dir):
         file_path = os.path.join(cache_dir, filename)
@@ -99,7 +111,10 @@ async def load_cache(): # Populate cache from the existing files in the cache di
             if total_size <= cache.maxsize:  # Ensure we don't exceed the cache size
                 cache[filename] = file_path
             else:
-                break  # Stop if we've reached the cache size limit
+                log.info('Cache size limit reached, removing file: {}'.format(filename))
+                os.remove(file_path)  # Remove file if it exceeds the cache size
+    log.info('Finished loading cache.')
+
 
 # Set up real-time notification system
 class NotificationSystem:
@@ -630,7 +645,7 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
     headers = {'Authorization': 'testpw123'}
     is_publicly_accessible = True
     try:
-        print(f'Attempting to get original file name from the Cascade blockchain ticket for registration txid {txid}...')
+        log.info(f'Attempting to get original file name from the Cascade blockchain ticket for registration txid {txid}...')
         ticket_response = await get_pastel_blockchain_ticket_func(txid)
         action_ticket = json.loads(base64.b64decode(ticket_response['ticket']['action_ticket']))
         api_ticket_str = action_ticket['api_ticket']
@@ -640,38 +655,38 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
         api_ticket =  json.loads(base64.b64decode(api_ticket_str).decode('utf-8'))
         original_file_name_string = api_ticket['file_name']
         is_publicly_accessible = api_ticket['make_publicly_accessible']
-        print(f'Got original file name from the Cascade blockchain ticket: {original_file_name_string}')
+        log.info(f'Got original file name from the Cascade blockchain ticket: {original_file_name_string}')
     except:
-        print('Unable to get original file name from the Cascade blockchain ticket! Using txid instead as the default file name...')
+        log.warning('Unable to get original file name from the Cascade blockchain ticket! Using txid instead as the default file name...')
         original_file_name_string = str(txid)
     if is_publicly_accessible == True:
         if txid in cache and os.path.exists(cache[txid]):  # Check if the file is already in cache and exists in the cache_dir
-            print(f"File is already cached, returning the cached file for txid {txid}...")
+            log.info(f"File is already cached, returning the cached file for txid {txid}...")
             async with aiofiles.open(cache[txid], mode='rb') as f:
                 decoded_response = await f.read()
             return decoded_response, original_file_name_string            
-        print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Now attempting to download the file from Cascade API for txid {txid}...')
+        log.info(f'Now attempting to download the file from Cascade API for txid {txid}...')
         async with db_session.create_async_session() as session:
             lock_exists = await session.get(CascadeCacheFileLocks, txid)
             if lock_exists:
-                print(f"Download of file {txid} is already in progress, skipping...")
+                log.warning(f"Download of file {txid} is already in progress, skipping...")
                 return
             else:
                 new_lock = CascadeCacheFileLocks(txid=txid)
-                session.add(new_lock) # To clear all the locks: sqlite3 db/opennode_fastapi.sqlite  "DELETE FROM cascade_cache_file_locks;"
+                session.add(new_lock) 
                 await session.commit()            
         try:
             async with httpx.AsyncClient() as client:
                 async with client.stream('GET', request_url, headers=headers, timeout=500.0) as response:
                     body = await response.aread()  # async read
                     parsed_response = json.loads(body.decode())  # parse JSON
-            print(f'Got response from Cascade API for txid {txid}')
+            log.info(f'Got response from Cascade API for txid {txid}')
             async with db_session.create_async_session() as session:
                 lock_exists = await session.get(CascadeCacheFileLocks, txid)
                 await session.delete(lock_exists)
                 await session.commit()         
         except Exception as e:
-            print(f'An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {e} Deleting the lock and returning...')
+            log.error(f'An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {e} Deleting the lock and returning...')
             async with db_session.create_async_session() as session:
                 lock_exists = await session.get(CascadeCacheFileLocks, txid)
                 await session.delete(lock_exists)
@@ -681,7 +696,7 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
         async with httpx.AsyncClient() as client:
             async with client.stream('GET', file_download_url, headers=headers, timeout=500.0) as response:        
                 decoded_response = await response.aread()  # async read
-        print(f'Saving the file to cache for txid {txid}...')
+        log.info(f'Saving the file to cache for txid {txid}...')
         cache_file_path = os.path.join(cache_dir, txid)
         async with aiofiles.open(cache_file_path, mode='wb') as f:
             await f.write(decoded_response)
@@ -693,16 +708,16 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
         if total_size > cache.maxsize: # Cache is full, remove the least recently used item from the cache
             lru_txid, _ = cache.popitem()
             os.remove(os.path.join(cache_dir, lru_txid))
-            print(f'Removed txid {lru_txid} from cache!')
-            print(f'Successfully decoded response from Cascade API for txid {txid}!')
-        print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished retrieving public Cascade file for txid {txid}! Took {time.time() - start_time} seconds in total.')
+            log.info(f'Removed txid {lru_txid} from cache!')
+            log.info(f'Successfully decoded response from Cascade API for txid {txid}!')
+        log.info(f'Finished retrieving public Cascade file for txid {txid}! Took {time.time() - start_time} seconds in total.')
         async with db_session.create_async_session() as session:
             lock_exists = await session.get(CascadeCacheFileLocks, txid)
             await session.delete(lock_exists)
             await session.commit()                    
     else:
         decoded_response = f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!'
-        print(decoded_response)
+        log.warning(decoded_response)
     return decoded_response, original_file_name_string
 
 
@@ -728,7 +743,9 @@ async def populate_database_with_all_dd_service_data_func():
                                              'ac0db6c7fdd248b1efd57f6e89ec4a83be12aa5488a941c1601830c339f0cfa8',
                                              'dcde4cda732983d1da17647ad61fd9bdfdd0fc2376b3dffaca110652ae123037',
                                              'c68b3964cdf087f1f6f8c3550d8b9ab850af16d58ba3eee577d9d0225add411f',
-                                             '2dfd4f84124ad420da69bd58c91135026633a91eb249ac5ce428a24b9a9fb46a']
+                                             '2dfd4f84124ad420da69bd58c91135026633a91eb249ac5ce428a24b9a9fb46a',
+                                             'b40ae53d019294ddb59de658c37876de580f870cef7f0fe1b6f80bec4076d303',
+                                             '0a63d2e33ac090483d97b1ccd02f084d67edcc7b1ceae623dcd1b7ad57f93df9']
     list_of_sense_registration_ticket_txids = [x for x in list_of_sense_registration_ticket_txids if x not in list_of_known_bad_sense_txids_to_skip]
     list_of_nft_registration_ticket_txids = nft_ticket_df_filtered['txid'].values.tolist()
     list_of_known_bad_nft_txids_to_skip = []
@@ -747,6 +764,155 @@ async def populate_database_with_all_dd_service_data_func():
             current_dd_service_data, is_cached_response = await get_parsed_dd_service_results_by_registration_ticket_txid_func(current_txid)
         except Exception as e:
             pass
+
+
+def get_walletnode_log_data_func():
+    log_file_path = '/home/ubuntu/.pastel/walletnode.log'
+    command = f'tail -n 100 {log_file_path}'
+    try:
+        log.info(f'Attempting to get data from wallet node log file at {log_file_path}...')
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, shell=True)
+        output, _ = process.communicate()
+        log_data = output.decode('utf-8')
+        log.info('Successfully obtained data from wallet node log file.')
+        return log_data
+    except Exception as e:
+        log.error(f'An error occurred while trying to get data from the wallet node log file! Error message: {e}')
+        return None
+
+
+def parse_walletnode_log_data_func(log_data):
+    if log_data is None:
+        log.warning('Cannot parse wallet node log data, as it is None!')
+        return pd.DataFrame()
+    txid_pattern = r'(?<=txid=)[a-f0-9]+'
+    status_pattern = r'(Start|Downloaded|Finished) downloading'
+    datetime_pattern = r'\[.*?\]'
+    parsed_data = []
+    for line in log_data.split('\n'):
+        txid_match = re.search(txid_pattern, line)
+        status_match = re.search(status_pattern, line)
+        datetime_match = re.search(datetime_pattern, line)
+        if txid_match and status_match and datetime_match:
+            txid = txid_match.group(0)
+            status = status_match.group(0)
+            datetime_str = datetime_match.group(0)[1:-1]  # remove brackets
+            datetime_obj = pd.to_datetime(datetime_str, errors='coerce') # use pandas to_datetime
+            parsed_data.append({'txid': txid, 'last_log_status': status, 'log_datetime': datetime_obj})
+    return pd.DataFrame(parsed_data)
+
+
+def update_cascade_status_func(df):
+    log_data = get_walletnode_log_data_func()
+    parsed_df = parse_walletnode_log_data_func(log_data)
+    if not parsed_df.empty:
+        for txid in parsed_df['txid'].unique():
+            new_row = parsed_df[parsed_df['txid'] == txid].iloc[-1]
+            if txid in df['txid'].values:
+                df.loc[df['txid'] == txid, 'last_log_status'] = new_row['last_log_status']
+                if new_row['last_log_status'] == 'Start downloading':
+                    df.loc[df['txid'] == txid, 'datetime_started'] = new_row['log_datetime']
+                elif new_row['last_log_status'] == 'Finished downloading':
+                    df.loc[df['txid'] == txid, 'datetime_finished'] = new_row['log_datetime']
+            else:
+                df = df.append(new_row)
+    return df
+
+
+async def update_cascade_status_periodically_func(df):
+    while True:
+        df = update_cascade_status_func(df)
+        await asyncio.sleep(1)
+        
+
+async def get_random_cascade_txids_func(n: int) -> List[str]:
+    try:
+        log.info('Getting random cascade transaction IDs...')
+        tickets_obj = await get_all_pastel_blockchain_tickets_func()
+        cascade_ticket_dict = json.loads(tickets_obj['action'])
+        cascade_ticket_dict_df = pd.DataFrame(cascade_ticket_dict).T
+        cascade_ticket_dict_df_filtered = cascade_ticket_dict_df[cascade_ticket_dict_df['action_type'] == 'cascade'].drop_duplicates(subset=['txid'])
+        txids = cascade_ticket_dict_df_filtered['txid'].tolist()
+        txids_sample = random.sample(txids, min(3*n, len(txids))) # Sample 3n TXIDs to increase the chance of getting enough public ones.
+        accessible_txids = []
+        for txid in txids_sample:
+            try:
+                ticket_response = await get_pastel_blockchain_ticket_func(txid)
+                action_ticket = json.loads(base64.b64decode(ticket_response['ticket']['action_ticket']))
+                api_ticket_str = action_ticket['api_ticket']
+                correct_padding = len(api_ticket_str) % 4
+                if correct_padding != 0:
+                    api_ticket_str += '=' * (4 - correct_padding)
+                api_ticket = json.loads(base64.b64decode(api_ticket_str).decode('utf-8'))
+                if api_ticket['make_publicly_accessible']:
+                    accessible_txids.append(txid)
+            except Exception as e:
+                log.error(f'An error occurred while checking if txid {txid} is publicly accessible! Error message: {e}')
+        if len(accessible_txids) < n:
+            log.warning('Not enough publicly accessible TXIDs for the requested number. Returning all that were found.')
+        return random.sample(accessible_txids, min(n, len(accessible_txids)))
+    except Exception as e:
+        log.error(f'An error occurred while trying to get random cascade transaction IDs! Error message: {e}')
+        return []
+
+
+async def download_cascade_file_test_func(txid: str) -> dict:
+    try:
+        log.info(f'Starting test download for txid {txid}...')
+        start_time = datetime.datetime.now()
+        result = await download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid)
+        end_time = datetime.datetime.now()
+        file_data, file_name = result
+        file_size = len(file_data)
+        download_speed = file_size / (end_time - start_time).total_seconds()
+        log.info(f'Successfully finished test download for txid {txid}.')
+        return {
+            'txid': txid,
+            'test_datetime_started': start_time,
+            'test_datetime_finished': end_time,
+            'file_size': file_size,
+            'file_name': file_name,
+            'download_speed': download_speed
+        }
+    except Exception as e:
+        log.error(f"Exception occurred in download_cascade_file_test_func for txid {txid}: {e}")
+        return None
+
+
+async def bulk_test_cascade_func(n: int):
+    try:
+        log.info('Starting bulk test of cascade...')
+        status_df = pd.DataFrame()
+        txids = await get_random_cascade_txids_func(n)
+        log.info(f'Got {len(txids)} txids for testing.')
+        update_task = asyncio.create_task(update_cascade_status_periodically_func(status_df))
+        download_tasks = [asyncio.create_task(download_cascade_file_test_func(txid)) for txid in txids]
+        log.info('Waiting for download tasks to finish...')
+        finished, unfinished = await asyncio.wait(download_tasks, timeout=300)
+        update_task.cancel()
+        log.info('All download tasks finished.')
+        status_df = update_task.result()
+        download_data = [t.result() for t in finished if t.result() is not None and 'txid' in t.result()]
+        download_df = pd.DataFrame(download_data)
+        df = pd.merge(download_df, status_df, how='left', on='txid')
+        log.info('Processing test results...')
+        df['within_2_min'] = (df['datetime_finished'] - df['datetime_started']) <= pd.Timedelta(minutes=2)
+        df['within_3_min'] = (df['datetime_finished'] - df['datetime_started']) <= pd.Timedelta(minutes=3)
+        df['within_5_min'] = (df['datetime_finished'] - df['datetime_started']) <= pd.Timedelta(minutes=5)
+        log.info('Writing test results to CSV...')
+        df.to_csv('cascade_bulk_download_test_results__data.csv', index=False)
+        within_2_min_percentage = df['within_2_min'].mean() * 100
+        within_3_min_percentage = df['within_3_min'].mean() * 100
+        within_5_min_percentage = df['within_5_min'].mean() * 100
+        summary_df = pd.DataFrame({
+            'Finished Within 2 Min (%)': [within_2_min_percentage],
+            'Finished Within 3 Min (%)': [within_3_min_percentage],
+            'Finished Within 5 Min (%)': [within_5_min_percentage],
+        })
+        summary_df.to_csv('cascade_bulk_download_test_results__summary.csv', index=False)
+        log.info('Finished bulk test of cascade.')
+    except Exception as e:
+        log.error(f'Error occurred during the bulk test of cascade: {e}', exc_info=True)
 
 
 async def run_populate_database_with_all_dd_service_data_func(background_tasks: BackgroundTasks = Depends):
