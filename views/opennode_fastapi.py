@@ -815,8 +815,14 @@ async def populate_database_with_all_dd_service_data(background_tasks: Backgroun
         return fastapi.Response(content=str(x), status_code=500)
 
 
-
-
-
+@router.get('/run_bulk_test_cascade/{num_downloads}', tags=["OpenAPI Methods"])
+async def run_bulk_test_cascade(num_downloads: int = 5):
+    try:
+        await bulk_test_cascade_func(num_downloads)
+        return {"message": "Test started successfully."}
+    except ValidationError as ve:
+        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
+    except Exception as x:
+        return fastapi.Response(content=str(x), status_code=500)
 
 
