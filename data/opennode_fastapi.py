@@ -134,3 +134,13 @@ class PastelTransactionOutputData(SqlAlchemyBase):
 class CascadeCacheFileLocks(SqlAlchemyBase):
     __tablename__ = 'cascade_cache_file_locks'
     txid = Column(String(64), primary_key=True)    
+    
+class BadTXID(SqlAlchemyBase):
+    __tablename__ = 'bad_txids'
+    id = sa.Column(sa.Integer, primary_key=True, autoincrement=True)
+    txid = sa.Column(sa.String, nullable=False, index=True)
+    ticket_type = sa.Column(sa.String, nullable=False, index=True)
+    reason_txid_is_bad = sa.Column(sa.String, nullable=True)
+    datetime_txid_marked_as_bad = sa.Column(sa.DateTime, default=datetime.datetime.now, index=True)
+    failed_attempts = sa.Column(sa.Integer, default=0)
+    next_attempt_time = sa.Column(sa.DateTime, default=datetime.datetime.now)
