@@ -1142,6 +1142,7 @@ async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
 
 async def bulk_test_cascade_func(n: int):
     try:
+        txid_log_dict = {}
         seconds_to_wait_for_all_files_to_finish_downloading = 500
         log_stream = io.StringIO()
         stream_handler = logging.StreamHandler(log_stream)
