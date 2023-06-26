@@ -726,7 +726,6 @@ async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: s
         # First check if we already have the results in our local sqlite database; if so, then return them:
         parsed_dd_service_data, is_cached_response = await check_for_parsed_dd_service_result_in_db_func(txid)
         if is_cached_response:
-            print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Found cached Parsed DD-Service data for ticket type {str(parsed_dd_service_data.ticket_type)} and txid {txid} in the local sqlite database! Took {round(time.time() - start_time, 2)} seconds in total.')
             return parsed_dd_service_data, is_cached_response
         raw_dd_service_data, _ = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid) # If we don't have the results in our local sqlite database, then we need to download the raw DD-Service data, parse it:
         parsed_dd_service_data = await parse_raw_dd_service_data_func(raw_dd_service_data)
