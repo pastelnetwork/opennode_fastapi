@@ -450,17 +450,16 @@ async def get_pastel_blockchain_ticket_func(txid):
 
 
 async def get_all_pastel_blockchain_tickets_func(verbose=0):
-    with MyTimer():
+    if verbose:
+        print('Now retrieving all Pastel blockchain tickets...')
+    tickets_obj = {}
+    list_of_ticket_types = ['id', 'nft', 'offer', 'accept', 'transfer', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act'] # 'collection', 'collection-act'
+    for current_ticket_type in list_of_ticket_types:
         if verbose:
-            print('Now retrieving all Pastel blockchain tickets...')
-        tickets_obj = {}
-        list_of_ticket_types = ['id', 'nft', 'offer', 'accept', 'transfer', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act'] # 'collection', 'collection-act'
-        for current_ticket_type in list_of_ticket_types:
-            if verbose:
-                print('Getting ' + current_ticket_type + ' tickets...')
-            response = await rpc_connection.tickets('list', current_ticket_type)
-            if response is not None and len(response) > 0:
-                tickets_obj[current_ticket_type] = await get_df_json_from_tickets_list_rpc_response_func(response)
+            print('Getting ' + current_ticket_type + ' tickets...')
+        response = await rpc_connection.tickets('list', current_ticket_type)
+        if response is not None and len(response) > 0:
+            tickets_obj[current_ticket_type] = await get_df_json_from_tickets_list_rpc_response_func(response)
     return tickets_obj
 
 
@@ -492,25 +491,24 @@ async def get_pastelid_from_username_func(username):
 
 
 async def testnet_pastelid_file_dispenser_func(password, verbose=0):
-    with MyTimer():
-        print('Now generating a pastelid...')
-        response = await rpc_connection.pastelid('newkey', password)
-        pastelid_data = ''
-        pastelid_pubkey = ''
-        if response is not None and len(response) > 0:
-            if 'pastelid' in response:
-                print('The pastelid is ' + response['pastelid'])    
-                print('Now checking to see if the pastelid file exists...')
-                pastelid_pubkey = response['pastelid']
-                if os.path.exists('~/.pastel/testnet3/pastelkeys/' + response['pastelid']):
-                    print('The pastelid file exists!')
-                    with open('~/.pastel/testnet3/pastelkeys/' + response['pastelid'], 'rb') as f:
-                        pastelid_data = f.read()
-                        return pastelid_data                     
-                else:
-                    print('The pastelid file does not exist!')
+    print('Now generating a pastelid...')
+    response = await rpc_connection.pastelid('newkey', password)
+    pastelid_data = ''
+    pastelid_pubkey = ''
+    if response is not None and len(response) > 0:
+        if 'pastelid' in response:
+            print('The pastelid is ' + response['pastelid'])    
+            print('Now checking to see if the pastelid file exists...')
+            pastelid_pubkey = response['pastelid']
+            if os.path.exists('~/.pastel/testnet3/pastelkeys/' + response['pastelid']):
+                print('The pastelid file exists!')
+                with open('~/.pastel/testnet3/pastelkeys/' + response['pastelid'], 'rb') as f:
+                    pastelid_data = f.read()
+                    return pastelid_data                     
             else:
-                print('There was an issue creating the pastelid!')
+                print('The pastelid file does not exist!')
+        else:
+            print('There was an issue creating the pastelid!')
     return pastelid_pubkey, pastelid_data
 
 
