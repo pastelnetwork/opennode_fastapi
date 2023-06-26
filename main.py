@@ -8,6 +8,7 @@ import random
 from starlette.staticfiles import StaticFiles
 
 from data import db_session
+from data.db_session import db_write_queue
 from views import opennode_fastapi
 from fastapi.middleware.cors import CORSMiddleware
 from services import opennode_fastapi_service
@@ -41,10 +42,17 @@ async def run_task_periodically(background_tasks: BackgroundTasks):
     while True:
         return_message = await opennode_fastapi_service.run_populate_database_with_all_dd_service_data_func(background_tasks)
         # return_message2 = await opennode_fastapi_service.run_scan_new_blocks_func(background_tasks)
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)
 
 
+async def process_db_queue(background_tasks: BackgroundTasks):
+    while True:
+        await db_write_queue.join()
+        await asyncio.sleep(1)  # sleep for a while before checking the queue again
+    
+    
 def start_background_tasks(app, background_tasks: BackgroundTasks):
+    asyncio.create_task(process_db_queue(background_tasks))
     asyncio.create_task(run_task_periodically(background_tasks))
 
 
@@ -103,5 +111,5 @@ if __name__ == '__main__':
     freeze_support()    
     main()
 else:
-    # start_background_tasks(app, background_tasks)
+    start_background_tasks(app, background_tasks)
     configure(dev_mode=False)
