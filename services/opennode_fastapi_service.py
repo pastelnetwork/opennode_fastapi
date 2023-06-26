@@ -138,12 +138,10 @@ cache = SizeLimitedLRUCache(maxsize=10 * 1024 * 1024 * 1024)  # 10 GB
 
 
 async def load_cache():  # Populate cache from the existing files in the cache directory
-    log.info('Starting to load cache.')
     for filename in os.listdir(cache_dir):
         file_path = os.path.join(cache_dir, filename)
         if os.path.isfile(file_path):
             cache[filename] = file_path
-    log.info('Finished loading cache.')
 
     
 # Set up real-time notification system
@@ -847,7 +845,6 @@ async def check_and_manage_cascade_file_cache_func(txid: str, cache_file_path: s
 
 async def get_cascade_original_file_metadata_func(txid: str):
     try:
-        log.info(f'Attempting to get original file name from the Cascade blockchain ticket for registration txid {txid}...')
         ticket_response = await get_pastel_blockchain_ticket_func(txid)
         action_ticket = json.loads(base64.b64decode(ticket_response['ticket']['action_ticket']))
         api_ticket_str = action_ticket['api_ticket']
@@ -909,7 +906,6 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
             if check_bad_txid_result:
                 log.warning(f'TXID {txid} is marked as bad.')
                 return check_bad_txid_result, ""
-            log.info('Getting original file metadata (i.e., file name, size, hash, and public accessibility status...')
             try:
                 original_file_name_string, is_publicly_accessible, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type = await get_cascade_original_file_metadata_func(txid)
             except Exception as e:
