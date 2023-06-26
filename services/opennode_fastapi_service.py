@@ -4,6 +4,8 @@ import io
 import datetime
 from typing import List, Optional, Tuple
 import cachetools
+from cachetools import LRUCache, cached
+from cachetools.keys import hashkey
 import aiofiles
 from aiofiles.os import stat as aio_stat
 
@@ -30,6 +32,7 @@ import hashlib
 import magic
 import subprocess
 import asyncio
+import pprint
 import numpy as np
 import pandas as pd
 from pandas._libs.tslibs.timestamps import Timestamp
@@ -84,7 +87,7 @@ USER_AGENT = "AuthServiceProxy/0.1"
 HTTP_TIMEOUT = 90
 
 #Setup logging:
-log = logging.getLogger("PastelRPC")
+log = logging.getLogger("PastelOpenNodeFastAPI")
 log.setLevel(logging.INFO)
 fh = logging.FileHandler('opennode_fastapi_log.txt')
 fh.setLevel(logging.INFO)
@@ -96,32 +99,52 @@ ch.setFormatter(formatter)
 log.addHandler(fh)
 log.addHandler(ch)
 
+class MemoryHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.log = ""
+
+    def emit(self, record):
+        self.log += self.format(record) + "\n"
+
+
 # Initialize the LRU cache and cache directory
 cache_dir = "/home/ubuntu/cascade_opennode_fastapi_cache"
 #create cache directory if it doesn't exist
 os.makedirs(cache_dir, exist_ok=True)
-cache = cachetools.LRUCache(maxsize=5 * 1024 * 1024 * 1024)  # 5 GB
 
-cache_lock = asyncio.Lock()
+
+class SizeLimitedLRUCache(LRUCache):
+    def __init__(self, maxsize, *args, **kwargs):
+        super().__init__(maxsize, *args, **kwargs)
+        self.getsize = os.path.getsize
+        self.current_size = 0
+
+    def __setitem__(self, key, value):
+        old_value = self.get(key)
+        if old_value is not None:
+            self.current_size -= self.getsize(old_value)
+        self.current_size += self.getsize(value)
+        while self.current_size > self.maxsize:
+            removed_key, removed_value = self.popitem(last=False)
+            self.current_size -= self.getsize(removed_value)
+            os.remove(os.path.join(cache_dir, removed_key))  # delete the file associated with the key
+        super().__setitem__(key, value)
+
+        
+# Create a cache with a maximum size
+cache = SizeLimitedLRUCache(maxsize=10 * 1024 * 1024 * 1024)  # 10 GB
+
 
 async def load_cache():  # Populate cache from the existing files in the cache directory
-    global cache
     log.info('Starting to load cache.')
-    total_size = 0
-    async with cache_lock:  # Use the lock to prevent concurrent access
-        for filename in os.listdir(cache_dir):
-            file_path = os.path.join(cache_dir, filename)
-            if os.path.isfile(file_path):
-                stat_result = await aio_stat(file_path)
-                total_size += stat_result.st_size
-                if total_size <= cache.maxsize:  # Ensure we don't exceed the cache size
-                    cache[filename] = file_path
-                else:
-                    log.info('Cache size limit reached, removing file: {}'.format(filename))
-                    os.remove(file_path)  # Remove file if it exceeds the cache size
+    for filename in os.listdir(cache_dir):
+        file_path = os.path.join(cache_dir, filename)
+        if os.path.isfile(file_path):
+            cache[filename] = file_path
     log.info('Finished loading cache.')
 
-
+    
 # Set up real-time notification system
 class NotificationSystem:
     @staticmethod
@@ -820,19 +843,9 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
     return cache_file_path, decoded_response
 
 
-async def check_and_manage_cascade_file_cache_func(txid: str, cache_file_path: str, decoded_response, cache, cache_dir: str):
-    async with cache_lock:  # Use the lock to prevent concurrent access
-        cache[txid] = cache_file_path  # Update LRU cache
-        total_size = 0
-        cache_values = list(cache.values()) # Get a list of values to avoid modifying dictionary while iterating
-        for f in cache_values:  # Check if the cache is full
-            stat_result = await aio_stat(f)
-            total_size += stat_result.st_size
-        if total_size > cache.maxsize:  # Cache is full, remove the least recently used item from the cache
-            lru_txid, _ = cache.popitem()
-            os.remove(os.path.join(cache_dir, lru_txid))
-            log.info(f'Removed txid {lru_txid} from cache!')
-        log.info(f'Successfully decoded response from Cascade API for txid {txid}!')
+async def check_and_manage_cascade_file_cache_func(txid: str, cache_file_path: str, decoded_response):
+    cache[txid] = cache_file_path  # Update LRU cache
+    log.info(f'Successfully decoded response from Cascade API for txid {txid}!')
     return decoded_response
 
 
@@ -919,7 +932,7 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
             if isinstance(decoded_response, str) and decoded_response.startswith("Error"):
                 log.error(f'An error occurred while downloading the file for txid {txid}. Error: {decoded_response}')
                 return decoded_response, ""
-            decoded_response = await check_and_manage_cascade_file_cache_func(txid, cache_file_path, decoded_response, cache, cache_dir)
+            decoded_response = await check_and_manage_cascade_file_cache_func(txid, cache_file_path, decoded_response)
             verification_result = await verify_downloaded_cascade_file_func(decoded_response, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type)
             if verification_result is not True:
                 log.error(f'File verification failed for txid {txid}. Error: {verification_result}')
@@ -973,26 +986,39 @@ def get_walletnode_log_data_func():
     except Exception as e:
         log.error(f'An error occurred while trying to get data from the wallet node log file! Error message: {e}')
         return None
-
+    
 
 def parse_walletnode_log_data_func(log_data):
     if log_data is None:
-        log.warning('Cannot parse wallet node log data, as it is None!')
+        print('Cannot parse wallet node log data, as it is None!')
         return pd.DataFrame()
-    txid_pattern = r'(?<=txid=)[a-f0-9]+'
-    status_pattern = r'(Start|Downloaded|Finished) downloading'
-    datetime_pattern = r'\[.*?\]'
+    log_pattern = r'\[(.*?)\]\s+INFO\s+(.*?):\s+(.*?)\sserver_ip=(.*?)\s(.*?)$'
+    txid_pattern = r'txid=(\w+)'  # regex pattern to match txid
     parsed_data = []
+    current_year = datetime.datetime.now().year  # get the current year
+    excluded_keys = {'KB', 'nodes', 'tries', 'task'}  # keys you want to exclude
     for line in log_data.split('\n'):
-        txid_match = re.search(txid_pattern, line)
-        status_match = re.search(status_pattern, line)
-        datetime_match = re.search(datetime_pattern, line)
-        if txid_match and status_match and datetime_match:
-            txid = txid_match.group(0)
-            status = status_match.group(0)
-            datetime_str = datetime_match.group(0)[1:-1]  # remove brackets
-            datetime_obj = pd.to_datetime(datetime_str, errors='coerce') # use pandas to_datetime
-            parsed_data.append({'txid': txid, 'last_log_status': status, 'log_datetime': datetime_obj})
+        match = re.match(log_pattern, line)
+        if match:
+            datetime_str = match.group(1) + f" {current_year}"  # append the current year
+            data = {
+                'log_datetime': pd.to_datetime(datetime_str, format='%b %d %H:%M:%S.%f %Y', errors='coerce'),  # add %Y to the format
+                'source': match.group(2),
+                'last_log_status': match.group(3),
+                'server_ip': match.group(4),
+            }
+            additional_data = match.group(5)
+            txid_match = re.search(txid_pattern, additional_data)
+            if txid_match:
+                data['txid'] = txid_match.group(1)
+                additional_data = additional_data.replace(f'txid={data["txid"]}', '')
+            additional_data = additional_data.strip().split(' ')
+            for item in additional_data:
+                if '=' in item:
+                    key, value = item.split('=')
+                    if key not in excluded_keys:  # only add to the data dict if key is not in the excluded_keys set
+                        data[key] = value
+            parsed_data.append(data)
     return pd.DataFrame(parsed_data)
 
 
@@ -1010,9 +1036,9 @@ def update_cascade_status_func(df):
             if 'txid' in df.columns and txid in df['txid'].values:
                 df.loc[df['txid'] == txid, 'last_log_status'] = row['last_log_status']
                 if row['last_log_status'] == 'Start downloading':
-                    df.loc[df['txid'] == txid, 'datetime_started'] = row['log_datetime']
+                    df.loc[df['txid'] == txid, 'datetime_started'] = row['log_datetime'] if pd.notnull(row['log_datetime']) else 'NA'
                 elif row['last_log_status'] == 'Finished downloading':
-                    df.loc[df['txid'] == txid, 'datetime_finished'] = row['log_datetime']
+                    df.loc[df['txid'] == txid, 'datetime_finished'] = row['log_datetime'] if pd.notnull(row['log_datetime']) else 'NA'
             else:
                 new_row = row.to_dict()
                 new_row.pop('log_datetime', None) # Remove as these fields are not in the original df
@@ -1056,14 +1082,15 @@ async def get_random_cascade_txids_func(n: int) -> List[str]:
             except Exception as e:
                 log.error(f'An error occurred while checking if txid {txid} is publicly accessible! Error message: {e}')
         accessible_txids = [x for x in accessible_txids if len(x) == 64 and x.isalnum()]
+        accessible_txids = list(set(accessible_txids))  # convert list to set to remove duplicates, then convert back to list
         if len(accessible_txids) < n:
             log.warning('Not enough publicly accessible TXIDs for the requested number. Returning all that were found.')
         return random.sample(accessible_txids, min(n, len(accessible_txids)))
     except Exception as e:
         log.error(f'An error occurred while trying to get random cascade transaction IDs! Error message: {e}')
         return []
-
-
+    
+    
 async def download_cascade_file_test_func(txid: str) -> dict:
     try:
         log.info(f'Starting test download for txid {txid}...')
@@ -1084,26 +1111,54 @@ async def download_cascade_file_test_func(txid: str) -> dict:
         }
     except Exception as e:
         log.error(f"Exception occurred in download_cascade_file_test_func for txid {txid}: {e}")
-        return None
+
+
+def print_dict_structure(d, indent=0):
+    for key, value in d.items():
+        print('\t' * indent + str(key))
+        if isinstance(value, dict):
+            print_dict_structure(value, indent+1)
+        elif isinstance(value, list):
+            if value:  # check if list is not empty
+                if isinstance(value[0], dict):
+                    print('\t' * (indent+1) + str(type(value[0])))
+                    print_dict_structure(value[0], indent+2)
+                else:
+                    print('\t' * (indent+1) + str(type(value[0])))
+            else:
+                print('\t' * (indent+1) + 'list is empty')
+        else:
+            print('\t' * (indent+1) + str(type(value)))
 
 
 async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
     def convert(item):
-        if isinstance(item, (Timestamp, pd.Timestamp)):
+        if isinstance(item, (pd.Timestamp, pd._libs.tslibs.timestamps.Timestamp, datetime.datetime)):
             return item.isoformat()
-        elif isinstance(item, (np.int64, np.int32, np.float64, np.float32)):
-            return item.item()
+        elif item == "NA":
+            return None # Convert "NA" strings into None
+        elif isinstance(item, pd._libs.tslibs.nattype.NaTType) or item is None:
+            return "None" # or you can return some other value that signifies None in your use case
+        elif isinstance(item, (np.int64, np.int32, np.float64, np.float32, int, float)):
+            return item.item() if hasattr(item, 'item') else item
         elif isinstance(item, dict):
             return {k: convert(v) for k, v in item.items()}
         elif isinstance(item, list):
             return [convert(elem) for elem in item]
         else:
-            return item
+            return str(item)
     converted_dict = {k: convert(v) for k, v in combined_output_dict.items()}
     return converted_dict
 
+
 async def bulk_test_cascade_func(n: int):
     try:
+        seconds_to_wait_for_all_files_to_finish_downloading = 500
+        log_stream = io.StringIO()
+        stream_handler = logging.StreamHandler(log_stream)
+        mem_handler = logging.handlers.MemoryHandler(capacity=1024*100, target=stream_handler) # Increase capacity if needed
+        mem_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        log.addHandler(mem_handler)        
         datetime_test_started = datetime.datetime.now()
         log.info('Starting bulk test of cascade...')
         status_df = pd.DataFrame()
@@ -1119,7 +1174,7 @@ async def bulk_test_cascade_func(n: int):
             log.error(f'Exception occurred while starting download tasks: {e}')
         log.info('Waiting for download tasks to finish...')
         try:
-            finished, unfinished = await asyncio.wait(download_tasks, timeout=300)
+            finished, unfinished = await asyncio.wait(download_tasks, timeout=seconds_to_wait_for_all_files_to_finish_downloading)
             if update_task in finished:
                 status_df, txid_log_dict = update_task.result()
             else:
@@ -1164,15 +1219,21 @@ async def bulk_test_cascade_func(n: int):
         except Exception as e:
             log.error(f'Exception occurred while writing cascade bulk download test summary CSV: {e}')
         log.info('Finished bulk test of cascade.')
-        df_dict = df.to_dict('records')
-        summary_df_dict = summary_df.to_dict('records')
+        df_dict = df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
+        summary_df_dict = summary_df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
         combined_output_dict = {
             'datetime_test_started': datetime_test_started.strftime('%Y-%m-%dT%H:%M:%S'),
             'duration_of_test_in_seconds': round((datetime.datetime.now() - datetime_test_started).total_seconds(), 2),
             'cascade_bulk_download_test_results__data': df_dict,
             'cascade_bulk_download_test_results__summary': summary_df_dict
         }
+        log.info('Converting output dict to make it safe for JSON...')
         combined_output_dict = await convert_dict_to_make_it_safe_for_json_func(combined_output_dict)
+        mem_handler.flush()
+        log_output = log_stream.getvalue()
+        log_output = log_output.replace('\n', '<br>')        
+        combined_output_dict['complete_output_log_during_test'] = log_output
+        log.removeHandler(mem_handler)
         return combined_output_dict
     except Exception as e:
         log.error(f'Error occurred during the bulk test of cascade: {e}', exc_info=True)
