@@ -748,7 +748,7 @@ async def add_bad_txid_to_db_func(txid, type, reason):
             if bad_txid_exists is None:
                 new_bad_txid = BadTXID(txid=txid, ticket_type=type, reason_txid_is_bad=reason, failed_attempts=1,
                                        next_attempt_time=datetime.datetime.now() + datetime.timedelta(days=1))
-                await add_record_to_write_queue(parsed_dd_service_data)
+                await add_record_to_write_queue(new_bad_txid)
             else:
                 bad_txid_exists.failed_attempts += 1  # If this txid is already marked as bad, increment the attempt count and set the next attempt time
                 if bad_txid_exists.failed_attempts == 2:
