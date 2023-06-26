@@ -53,8 +53,8 @@ def global_init(db_file: str):
     __factory = orm.sessionmaker(bind=engine)
     # noinspection PyUnresolvedReferences
     import data.__all_models
-    print("All SQLAlchemy models that are currently loaded:")
-    print(SqlAlchemyBase.metadata.tables.keys())
+    # print("All SQLAlchemy models that are currently loaded:")
+    # print(SqlAlchemyBase.metadata.tables.keys())
     SqlAlchemyBase.metadata.create_all(engine)
 
 
@@ -111,8 +111,6 @@ async def write_records_to_db_func():
                     session.merge(record)
                     await session.commit()
                 last_write_time = time.time()
-            record.processed = True
-            logger.info(f"Record {record} successfully processed.")
         except Exception as e:
             # If an error occurs, requeue the record with an increased retry count
             logger.error(f"Error occurred during DB write: {e}, retrying...")
@@ -123,7 +121,4 @@ async def write_records_to_db_func():
 
 
 async def add_record_to_write_queue(record):
-    if not record.processed:
-        await db_write_queue.put((record, 0))
-    else:
-        logger.info(f"Record {record} has already been processed.")
+    await db_write_queue.put((record, 0))
