@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSessio
 from fastapi import BackgroundTasks, Depends, Body
 
 from data import db_session
+from data.db_session import add_record_to_write_queue
 from data.opennode_fastapi import OpenNodeFastAPIRequests, ParsedDDServiceData, RawDDServiceData, PastelBlockData, PastelAddressData, PastelTransactionData, PastelTransactionInputData, PastelTransactionOutputData, CascadeCacheFileLocks, BadTXID
 import os
 import sys
@@ -557,9 +558,7 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
         raw_dd_service_data.raw_dd_service_data_json = decoded_response
         raw_dd_service_data.corresponding_pastel_blockchain_ticket_data = str(corresponding_pastel_blockchain_ticket_data)
         try:
-            async with db_session.create_async_session() as session:
-                session.add(raw_dd_service_data)
-                await session.commit()
+            await add_record_to_write_queue(raw_dd_service_data)
         except Exception as e:
             log.error(f"Failed to save raw DD service results to local DB for txid {txid} with error: {e}")
         return raw_dd_service_data
@@ -717,10 +716,8 @@ async def check_for_parsed_dd_service_result_in_db_func(txid: str) -> Tuple[Opti
         
 
 async def save_parsed_dd_service_data_to_db_func(parsed_dd_service_data):
-    try:    
-        async with db_session.create_async_session() as session:
-            session.add(parsed_dd_service_data)
-            await session.commit()
+    try:
+        await add_record_to_write_queue(parsed_dd_service_data)
     except Exception as e:
         log.error(f'Error saving parsed_dd_service_data to local sqlite database: {e}')
 
@@ -753,7 +750,7 @@ async def add_bad_txid_to_db_func(txid, type, reason):
             if bad_txid_exists is None:
                 new_bad_txid = BadTXID(txid=txid, ticket_type=type, reason_txid_is_bad=reason, failed_attempts=1,
                                        next_attempt_time=datetime.datetime.now() + datetime.timedelta(days=1))
-                session.add(new_bad_txid)
+                await add_record_to_write_queue(parsed_dd_service_data)
             else:
                 bad_txid_exists.failed_attempts += 1  # If this txid is already marked as bad, increment the attempt count and set the next attempt time
                 if bad_txid_exists.failed_attempts == 2:
@@ -815,8 +812,7 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
         return None, None  # return tuple of None
     else:
         new_lock = CascadeCacheFileLocks(txid=txid)
-        session.add(new_lock)
-        await session.commit()
+        await add_record_to_write_queue(new_lock)
     cache_file_path = None
     decoded_response = None
     try:
