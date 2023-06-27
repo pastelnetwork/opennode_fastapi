@@ -52,9 +52,10 @@ async def process_db_queue(background_tasks: BackgroundTasks):
     
     
 def start_background_tasks(app, background_tasks: BackgroundTasks):
+    asyncio.create_task(opennode_fastapi_service.startup_cascade_file_download_lock_cleanup_func(background_tasks))
     asyncio.create_task(process_db_queue(background_tasks))
     asyncio.create_task(run_task_periodically(background_tasks))
-
+    
 
 class LogConfig(BaseModel):
     """Logging configuration to be set for the server"""
