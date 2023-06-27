@@ -1,7 +1,7 @@
 import base64
 import sqlite3
 import io
-import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 import cachetools
 from cachetools import LRUCache, cached
@@ -34,6 +34,7 @@ import magic
 import subprocess
 import asyncio
 import pprint
+from collections import Counter
 import numpy as np
 import pandas as pd
 from pandas._libs.tslibs.timestamps import Timestamp
@@ -420,7 +421,7 @@ async def get_pastel_blockchain_ticket_func(txid):
         corresponding_reg_ticket_block_height = response_json['height']
         corresponding_reg_ticket_block_info = await rpc_connection.getblock(str(corresponding_reg_ticket_block_height))
         corresponding_reg_ticket_block_timestamp = corresponding_reg_ticket_block_info['time']
-        corresponding_reg_ticket_block_timestamp_utc_iso = datetime.datetime.utcfromtimestamp(corresponding_reg_ticket_block_timestamp).isoformat()
+        corresponding_reg_ticket_block_timestamp_utc_iso = datetime.utcfromtimestamp(corresponding_reg_ticket_block_timestamp).isoformat()
         response_json['reg_ticket_block_timestamp_utc_iso'] = corresponding_reg_ticket_block_timestamp_utc_iso
         if ticket_type_string == 'nft-reg':
             activation_response_json = await rpc_connection.tickets('find', 'act', txid )
@@ -526,9 +527,9 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
         
         headers = {'Authorization': 'testpw123'}
         async with httpx.AsyncClient() as client:
-            log.info(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}...') 
+            log.info(f'[Timestamp: {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}] Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}...') 
             response = await client.get(request_url, headers=headers, timeout=500.0)    
-            log.info(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading Raw DD-Service results for ticket type {ticket_type} and txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
+            log.info(f'[Timestamp: {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading Raw DD-Service results for ticket type {ticket_type} and txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
         parsed_response = response.json()
         if parsed_response['file'] is None:
             raise ValueError(f'No file was returned from the {ticket_type} API for txid {txid}!')
@@ -735,14 +736,14 @@ async def add_bad_txid_to_db_func(txid, type, reason):
             bad_txid_exists = result.scalars().first()
             if bad_txid_exists is None:
                 new_bad_txid = BadTXID(txid=txid, ticket_type=type, reason_txid_is_bad=reason, failed_attempts=1,
-                                       next_attempt_time=datetime.datetime.now() + datetime.timedelta(days=1))
+                                       next_attempt_time=datetime.utcnow() + timedelta(days=1))
                 await add_record_to_write_queue(new_bad_txid)
             else:
                 bad_txid_exists.failed_attempts += 1  # If this txid is already marked as bad, increment the attempt count and set the next attempt time
                 if bad_txid_exists.failed_attempts == 2:
-                    bad_txid_exists.next_attempt_time = datetime.datetime.now() + datetime.timedelta(days=3)
+                    bad_txid_exists.next_attempt_time = datetime.utcnow() + timedelta(days=3)
                 else:
-                    bad_txid_exists.next_attempt_time = datetime.datetime.now() + datetime.timedelta(days=1)
+                    bad_txid_exists.next_attempt_time = datetime.utcnow() + timedelta(days=1)
             await session.commit()
             if bad_txid_exists is None:
                 log.info(f"No BadTXID object found with txid: {txid}, creating a new one...")
@@ -758,7 +759,7 @@ async def get_bad_txids_from_db_func(type):
         async with db_session.create_async_session() as session:
             result = await session.execute(
                 select(BadTXID).where(BadTXID.ticket_type == type, BadTXID.failed_attempts >= 3,
-                                      BadTXID.next_attempt_time < datetime.datetime.now()))
+                                      BadTXID.next_attempt_time < datetime.utcnow()))
             bad_txids = result.scalars().all()
         return [bad_tx.txid for bad_tx in bad_txids]
     except Exception as e:
@@ -773,30 +774,51 @@ async def check_and_update_cascade_ticket_bad_txid_func(txid: str, session):
         bad_txid_exists = result.scalars().first()
         if bad_txid_exists:
             log.info("Bad TXID exists.")
-            if datetime.datetime.now() < bad_txid_exists.next_attempt_time:
+            if datetime.utcnow() < bad_txid_exists.next_attempt_time:
                 return f"Error: txid {txid} is marked as bad and has not reached its next attempt time.", ""
             else:
                 log.info("Incrementing failed attempts.")
                 bad_txid_exists.failed_attempts += 1
                 if bad_txid_exists.failed_attempts == 3:
-                    bad_txid_exists.next_attempt_time = datetime.datetime.now() + datetime.timedelta(days=3)
+                    bad_txid_exists.next_attempt_time = datetime.utcnow() + timedelta(days=3)
                 else:
-                    bad_txid_exists.next_attempt_time = datetime.datetime.now() + datetime.timedelta(days=1)
+                    bad_txid_exists.next_attempt_time = datetime.utcnow() + timedelta(days=1)
                 await session.commit()
         return None
     except Exception as e:
         log.error(f"Error in check_and_update_cascade_ticket_bad_txid_func. Error: {e}")
         raise
-    
+
+
+async def startup_cascade_file_download_lock_cleanup_func(background_tasks: BackgroundTasks):
+    async with db_session.create_async_session() as session:
+        lock_expiration_time = timedelta(minutes=10)
+        current_time = datetime.utcnow()
+        stale_locks_query = select(CascadeCacheFileLocks).where(CascadeCacheFileLocks.lock_created_at < (current_time - lock_expiration_time))
+        result = await session.execute(stale_locks_query)
+        stale_locks = result.scalars().all()
+        log.info(f"Found {len(stale_locks)} stale cascade file download locks!")
+        for lock in stale_locks:
+            session.delete(lock)
+        await session.commit()
+        log.info(f"Deleted {len(stale_locks)} stale cascade file download locks locks")
+            
     
 async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str):
+    lock_expiration_time = timedelta(minutes=10)  # Define cascade file download lock expiration time to be 10 minutes (this is so that we don't try to download the same file from multiple workers at the same time)
     lock_exists = await session.get(CascadeCacheFileLocks, txid)
+    current_time = datetime.utcnow()
     if lock_exists:
-        log.warning(f"Download of file {txid} is already in progress, skipping...")
-        return None, None  # return tuple of None
-    else:
-        new_lock = CascadeCacheFileLocks(txid=txid)
-        await add_record_to_write_queue(new_lock)
+        lock_age = current_time - lock_exists.lock_created_at
+        if lock_age < lock_expiration_time:
+            log.warning(f"Download of file {txid} is already in progress, skipping...")
+            return None, None  # return tuple of None
+        else: # Lock is considered stale, delete it
+            await session.delete(lock_exists)
+            await session.commit()
+            log.warning(f"Stale lock for file {txid} has been deleted...")
+    new_lock = CascadeCacheFileLocks(txid=txid, lock_created_at=current_time)
+    await add_record_to_write_queue(new_lock)
     cache_file_path = None
     decoded_response = None
     try:
@@ -820,6 +842,10 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
             await session.commit()
         await add_bad_txid_to_db_func(txid, 'cascade', str(e))
         return f"Error: An exception occurred while downloading the file. The txid {txid} has been marked as bad.", ""
+    lock_exists = await session.get(CascadeCacheFileLocks, txid)
+    if lock_exists:
+        await session.delete(lock_exists)
+        await session.commit()
     return cache_file_path, decoded_response
 
 
@@ -977,7 +1003,7 @@ def print_dict_structure(d, indent=0):
 
 async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
     def convert(item):
-        if isinstance(item, (pd.Timestamp, pd._libs.tslibs.timestamps.Timestamp, datetime.datetime)):
+        if isinstance(item, (pd.Timestamp, pd._libs.tslibs.timestamps.Timestamp, datetime)):
             return item.isoformat()
         elif item == "NA":
             return None # Convert "NA" strings into None
@@ -1033,10 +1059,10 @@ async def get_random_cascade_txids_func(n: int) -> List[str]:
     
 async def download_cascade_file_test_func(txid: str) -> dict:
     try:
-        start_time = datetime.datetime.now()
+        start_time = datetime.utcnow()
         use_cascade_file_cache = False
         result = await download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid, use_cascade_file_cache)
-        end_time = datetime.datetime.now()
+        end_time = datetime.utcnow()
         file_data, file_name = result
         file_size_in_megabytes = len(file_data)/(1024.0**2)
         download_speed_in_mb_per_second = file_size_in_megabytes / (end_time - start_time).total_seconds()
@@ -1056,7 +1082,7 @@ async def download_cascade_file_test_func(txid: str) -> dict:
         
 def get_walletnode_log_data_func():
     log_file_path = '/home/ubuntu/.pastel/walletnode.log'
-    command = f'tail -n 500 {log_file_path}'
+    command = f'tail -n 300 {log_file_path}'
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, shell=True)
         output, _ = process.communicate()
@@ -1077,9 +1103,9 @@ def parse_walletnode_log_data_func(log_data):
     parsed_data = []
     log_indices = {}
     downloaded_parts = {}
-    supernode_addresses = {}  # Stores addresses for each txid
+    supernode_ips_dict = {}  # Changed from a set to a dictionary
     current_index = {}  # Stores the current index for each txid
-    current_year = datetime.datetime.now().year
+    current_year = datetime.utcnow().year
     for line in log_data.split('\n'):
         match = re.match(log_pattern, line)
         if match:
@@ -1102,31 +1128,25 @@ def parse_walletnode_log_data_func(log_data):
                 if 'Downloaded from supernode' in line:
                     supernode_match = re.search(downloaded_pattern, line)
                     if supernode_match:
-                        supernode_address = supernode_match.group(1)
-                        if txid in supernode_addresses:
-                            supernode_addresses[txid].add(supernode_address)
-                        else:
-                            supernode_addresses[txid] = {supernode_address}
+                        supernode_ip = supernode_match.group(1)
+                        if txid not in supernode_ips_dict:  # Add this check
+                            supernode_ips_dict[txid] = []
+                        supernode_ips_dict[txid].append(supernode_ip)
                 parsed_data.append(data)
     parsed_data_df = pd.DataFrame(parsed_data)
-    for data in parsed_data_df.itertuples():
-        txid = getattr(data, 'txid')
-        if txid:
-            parsed_data_df.loc[data.Index, 'list_of_supernode_ip_addresses_that_provided_file_chunks'] = ', '.join(supernode_addresses.get(txid, []))
-    return parsed_data_df
+    return parsed_data_df, supernode_ips_dict  # Return the dictionary instead of a list
 
 
 def update_cascade_status_func(df: pd.DataFrame):
     log_data = get_walletnode_log_data_func()
-    parsed_log_data = parse_walletnode_log_data_func(log_data)
+    parsed_log_data, supernode_ips_dict = parse_walletnode_log_data_func(log_data)
     txid_log_dict = {}
     for idx, row in parsed_log_data.iterrows():
         txid = row['txid']
         log_line = {
             'index': row['index'], 
             'datetime': row['timestamp'], 
-            'message': row['message'], 
-            'list_of_supernode_ip_addresses_that_provided_file_chunks': row['list_of_supernode_ip_addresses_that_provided_file_chunks']
+            'message': row['message']
         }
         if txid in txid_log_dict:
             txid_log_dict[txid]['log_lines'].append(log_line)
@@ -1137,34 +1157,42 @@ def update_cascade_status_func(df: pd.DataFrame):
             }
         if 'txid' in df.columns and txid in df['txid'].values:
             df.loc[df['txid'] == txid, 'last_log_status'] = row['message']
+            df.loc[df['txid'] == txid, 'supernode_ips'] = ", ".join(supernode_ips_dict.get(txid, []))
             if row['message'] == 'Start downloading':
                 df.loc[df['txid'] == txid, 'datetime_started'] = row['timestamp'] if pd.notnull(row['timestamp']) else 'NA'
             elif row['message'] == 'Finished downloading':
                 df.loc[df['txid'] == txid, 'datetime_finished'] = row['timestamp'] if pd.notnull(row['timestamp']) else 'NA'
         else:
-            new_row = row.to_dict()
-            new_row.pop('timestamp', None)  # Remove 'timestamp' as these fields are not in the original df
+            new_row = {
+                'index': row['index'],
+                'timestamp': row['timestamp'],
+                'message': row['message'],
+                'txid': txid,
+                'supernode_ips': ", ".join(supernode_ips_dict.get(txid, []))
+            }
             df = df.append(new_row, ignore_index=True)
-    return df, txid_log_dict
+    return df, txid_log_dict, supernode_ips_dict
 
 
 async def update_cascade_status_periodically_func(df: pd.DataFrame):
     txid_log_dict = {}
+    supernode_ips_dict = {}
     try:
         while True:
-            df, new_txid_log_dict = update_cascade_status_func(df)
-            txid_log_dict.update(new_txid_log_dict)  # Update the txid_log_dict with new logs
-            await asyncio.sleep(0.25)
+            df, new_txid_log_dict, new_supernode_ips_dict = update_cascade_status_func(df)
+            txid_log_dict.update(new_txid_log_dict)  
+            supernode_ips_dict.update(new_supernode_ips_dict)
+            await asyncio.sleep(0.5)
     except asyncio.exceptions.CancelledError:
         log.info('The status update task was cancelled.')
-    return df, txid_log_dict
+    return df, txid_log_dict, supernode_ips_dict
 
 
 async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading):
     try:
         df = pd.DataFrame()  # Initialize dataframe here
         txid_log_dict = {}
-        update_task = asyncio.create_task(update_cascade_status_periodically_func(df))
+        supernode_ips_dict = {}
         try:
             update_task = asyncio.create_task(update_cascade_status_periodically_func(df))            
         except Exception as e:
@@ -1180,9 +1208,10 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
             max_cancel_attempts = 3  # Set maximum cancel attempts
             cancel_timeout = 20  # Set cancel timeout
             status_df = pd.DataFrame()
-            txid_log_dict = {}            
+            txid_log_dict = {}
+            supernode_ips_dict = {}
             if update_task in finished:
-                status_df, txid_log_dict = update_task.result()
+                status_df, txid_log_dict, supernode_ips_dict = update_task.result()
             else:
                 for attempt in range(max_cancel_attempts):
                     update_task.cancel()
@@ -1193,21 +1222,23 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
                         continue
                     if update_task.done():
                         try:
-                            status_df, txid_log_dict = update_task.result()
+                            status_df, txid_log_dict, supernode_ips_dict = update_task.result()
                         except asyncio.exceptions.CancelledError:
                             log.warning('Update task was cancelled.')
                             status_df = pd.DataFrame()
                             txid_log_dict = {}
+                            supernode_ips_dict = {}
                     break
                 else:  # This block runs if we have gone through all the attempts without breaking
                     log.error('Update task did not finish even after multiple cancellation attempts. Aborting.')
-                    return None, None
+                    return None, None, None
         except Exception as e:
             log.error(f'Exception occurred while waiting for download tasks to finish: {e}')
         log.info('All download tasks finished.')
         download_data = [t.result() for t in finished if t.result() is not None and 'txid' in t.result()]
         download_df = pd.DataFrame(download_data)
         download_df['log_lines'] = download_df['txid'].map(txid_log_dict) 
+        download_df['supernode_ips'] = download_df['txid'].apply(lambda x: ", ".join(supernode_ips_dict.get(x, [])))
         download_df['txid'] = download_df['txid'].astype(str)  # Ensure the 'txid' column has the same data type in both dataframes
         if 'txid' in status_df.columns and download_df['txid'].isin(status_df['txid']).sum() != download_df.shape[0]:
             df = pd.merge(download_df, status_df, how='left', on='txid')
@@ -1217,7 +1248,7 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
             df['time_elapsed'] = (df['datetime_finished'] - df['datetime_started']).dt.total_seconds()
         else:
             df['time_elapsed'] = np.nan             
-        return df, txid_log_dict
+        return df, txid_log_dict, supernode_ips_dict
     except Exception as e:
         log.error(f'Error occurred while performing download tasks: {e}', exc_info=True)
 
@@ -1225,6 +1256,10 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
 def create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading, number_of_concurrent_downloads):
     finished_before_timeout = df[df['time_elapsed'] < seconds_to_wait_for_all_files_to_finish_downloading].shape[0]
     finished_within_one_min = df[df['time_elapsed'] < 60].shape[0]
+    all_supernode_ips = [ip.strip() for sublist in df['supernode_ips'].str.split(',').tolist() for ip in sublist if ip != '']
+    supernode_ip_counts = dict(Counter(all_supernode_ips))
+    total_counts = sum(supernode_ip_counts.values())
+    supernode_ip_percentages = {ip: round((count/total_counts)*100, 2) for ip, count in supernode_ip_counts.items()}
     summary_df = pd.DataFrame({
         'total_number_of_files_tested': number_of_concurrent_downloads,
         'number_of_files_downloaded': [len(df)],
@@ -1235,26 +1270,28 @@ def create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_file
         'average_file_size_in_megabytes': [df['file_size_in_megabytes'].mean().round(3)],
         'max_file_size_in_megabytes': [df['file_size_in_megabytes'].max().round(3)],
         'median_download_speed_in_mb_per_second': [df['download_speed_in_mb_per_second'].median().round(3)],
+        'supernode_ip_counts': [supernode_ip_counts],
+        'supernode_ip_percentages': [supernode_ip_percentages],
     })
     return summary_df
 
 
 async def bulk_test_cascade_func(n: int):
     try:
-        datetime_test_started = datetime.datetime.now()
+        datetime_test_started = datetime.utcnow()
         log.info('Starting bulk test of cascade...')
         status_df = pd.DataFrame()
         txids = await get_random_cascade_txids_func(n)
         log.info(f'Got {len(txids)} txids for testing.')
         seconds_to_wait_for_all_files_to_finish_downloading = 500
-        df, txid_log_dict = await perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading)        
+        df, txid_log_dict, supernode_ips = await perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading)        
         summary_df = create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading, n)
         log.info('Processing test results...')
         df_dict = df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
         summary_dict = summary_df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
         combined_output_dict = {
             'datetime_test_started': datetime_test_started.strftime('%Y-%m-%dT%H:%M:%S'),
-            'duration_of_test_in_seconds': round((datetime.datetime.now() - datetime_test_started).total_seconds(), 2),
+            'duration_of_test_in_seconds': round((datetime.utcnow() - datetime_test_started).total_seconds(), 2),
             'cascade_bulk_download_test_results__data': df_dict,
             'cascade_bulk_download_test_results__summary': summary_dict
         }
@@ -1392,9 +1429,9 @@ async def get_current_total_number_of_registered_sense_fingerprints_func():
     sense_ticket_df_filtered = sense_ticket_df_filtered[boolean_filter]
     list_of_sense_registration_ticket_txids = sense_ticket_df_filtered['txid'].values.tolist()
     fingerprint_counter = len(list_of_sense_registration_ticket_txids)
-    current_datetime_utc = datetime.datetime.utcnow()
+    current_datetime_utc = datetime.utcnow()
     current_datetime_utc_string = current_datetime_utc.strftime("%Y-%m-%d %H:%M:%S")
-    timestamp = int(datetime.datetime.timestamp(current_datetime_utc))
+    timestamp = int(datetime.timestamp(current_datetime_utc))
     response = {'total_number_of_registered_sense_fingerprints': fingerprint_counter, 'as_of_datetime_utc_string': current_datetime_utc_string, 'as_of_timestamp': timestamp}
     return response
 
@@ -1469,9 +1506,9 @@ async def get_current_total_number_and_size_and_average_size_of_registered_casca
     percentage_publicly_accessible_files = (publicly_accessible_files / file_counter) * 100
     percentage_publicly_accessible_bytes = (publicly_accessible_bytes / data_size_bytes_counter) * 100
     average_file_size_in_bytes = round(data_size_bytes_counter/file_counter,3)
-    current_datetime_utc = datetime.datetime.utcnow()
+    current_datetime_utc = datetime.utcnow()
     current_datetime_utc_string = current_datetime_utc.strftime("%Y-%m-%d %H:%M:%S")
-    timestamp = int(datetime.datetime.timestamp(current_datetime_utc))
+    timestamp = int(datetime.timestamp(current_datetime_utc))
     response = {'total_number_of_registered_cascade_files': file_counter, 
                 'data_size_bytes_counter': round(data_size_bytes_counter,3), 
                 'average_file_size_in_bytes': average_file_size_in_bytes, 
@@ -1532,7 +1569,7 @@ async def parse_and_store_block(block_hash: str, session):
             block_hash=block_hash,
             block_height=block_data['height'],
             previous_block_hash=block_data['previousblockhash'],
-            timestamp=datetime.datetime.fromtimestamp(block_data['time'])
+            timestamp=datetime.fromtimestamp(block_data['time'])
         )
         # Parse transactions in the block
         for txid in block_data['tx']:
@@ -1646,7 +1683,7 @@ def compute_elapsed_time_in_minutes_between_two_datetimes_func(start_datetime, e
 
 
 def compute_elapsed_time_in_minutes_since_start_datetime_func(start_datetime):
-    end_datetime = datetime.datetime.now()
+    end_datetime = datetime.utcnow()
     total_minutes_elapsed = compute_elapsed_time_in_minutes_between_two_datetimes_func(start_datetime, end_datetime)
     return total_minutes_elapsed
 
