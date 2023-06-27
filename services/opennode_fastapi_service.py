@@ -1056,7 +1056,7 @@ async def download_cascade_file_test_func(txid: str) -> dict:
         
 def get_walletnode_log_data_func():
     log_file_path = '/home/ubuntu/.pastel/walletnode.log'
-    command = f'tail -n 500 {log_file_path}'
+    command = f'tail -n 250 {log_file_path}'
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, shell=True)
         output, _ = process.communicate()
@@ -1154,7 +1154,7 @@ async def update_cascade_status_periodically_func(df: pd.DataFrame):
         while True:
             df, new_txid_log_dict = update_cascade_status_func(df)
             txid_log_dict.update(new_txid_log_dict)  # Update the txid_log_dict with new logs
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.25)
     except asyncio.exceptions.CancelledError:
         log.info('The status update task was cancelled.')
     return df, txid_log_dict
@@ -1216,7 +1216,10 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
             df = pd.merge(download_df, status_df, how='left', on='txid')
         else:
             df = download_df
-        df['time_elapsed'] = (df['datetime_finished'] - df['datetime_started']).dt.total_seconds()
+        if 'datetime_finished' in df.columns and 'datetime_started' in df.columns:
+            df['time_elapsed'] = (df['datetime_finished'] - df['datetime_started']).dt.total_seconds()
+        else:
+            df['time_elapsed'] = np.nan             
         return df, txid_log_dict
     except Exception as e:
         log.error(f'Error occurred while performing download tasks: {e}', exc_info=True)
