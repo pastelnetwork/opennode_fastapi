@@ -1,826 +1,147 @@
-import base64
-import json
-import random
-import sys
-import io
-from typing import Union, Dict, Any
-
-import fastapi
-from fastapi import BackgroundTasks, Depends, Response, Query
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi_chameleon import template
-from starlette.requests import Request
-from starlette import status
-
-from viewmodels.opennode_fastapi.data_viewmodel import DataViewModel
-from data.opennode_fastapi import OpenNodeFastAPIRequests, ValidationError
-from services import opennode_fastapi_service
-from fastapi import BackgroundTasks
-from json import JSONEncoder
+from typing import List
+import sqlalchemy as sa
+import sqlalchemy.orm as orm
+from data.modelbase import SqlAlchemyBase
+from sqlalchemy import Column, String, BigInteger, ForeignKey, DECIMAL, DateTime
+from sqlalchemy.orm import relationship
 import datetime
-import aiohttp
-import asyncio
-import httpx
+
+class OpenNodeFastAPIRequests(SqlAlchemyBase):
+    __tablename__ = 'opennode_fastapi_requests'
+    id = sa.Column(sa.Integer, primary_key=True)
+    datetime_request_received: datetime.datetime = sa.Column(sa.DateTime, default=datetime.datetime.now, index=True)
+    datetime_request_fulfilled: datetime.datetime = sa.Column(sa.DateTime, index=True)
+    user_specified_pastel_address_to_send_to: str = sa.Column(sa.String, nullable=False, index=True)
+    requesting_ip_address: str = sa.Column(sa.String, nullable=True, index=True)
+    requested_amount_in_lsp: float = sa.Column(sa.Float, nullable=True)
+    request_local_opid: str = sa.Column(sa.String, nullable=True)
+    request_status: str = sa.Column(sa.String, nullable=True)
+    completed_request_txid: str = sa.Column(sa.String, nullable=True)
+    valid_request: bool = sa.Column(sa.Boolean, default=True)
+    operation_status_json: str = sa.Column(sa.String, nullable=True)
+
+    @property
+    def __repr__(self):
+        return '<OpenNodeFastAPIRequests {}>'.format(self.id)
 
 
-router = fastapi.APIRouter()
+class ValidationError(Exception):
+    def __init__(self, error_msg: str, status_code: int):
+        super().__init__(error_msg)
 
-from services.opennode_fastapi_service import *
-
-tags_metadata = [
-    {"name": "High-Level Methods", "description": "Endpoints that are not actually part of the Pastel RPC API, but operate at a higher level of abstraction."},
-    {"name": "OpenAPI Methods", "description": "Endpoints that are interact with both the Pastel RPC API and also the Walletnode API to get information on Sense and Cascade."},
-    {"name": "Blockchain Methods", "description": "Endpoints for retrieving blockchain data"},
-    {"name": "Mining Methods", "description": "Endpoints for retrieving mining data"},
-    {"name": "Ticket Methods", "description": "Endpoints for retrieving blockchain ticket data"},
-    {"name": "Supernode Methods", "description": "Endpoints for retrieving Supernode data"},
-    {"name": "Network Methods", "description": "Endpoints for retrieving network data"},
-    {"name": "Raw Transaction Methods", "description": "Endpoints for working with raw transactions"},
-    {"name": "Utility Methods", "description": "Endpoints for various utility functions"},
-    {"name": "Control Methods", "description": "Endpoints for various control methods"},
-]
-
-class DateTimeEncoder(JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, (datetime.date, datetime.datetime)):
-            return obj.isoformat()
-
-
-@router.get('/getbestblockhash', tags=["Blockchain Methods"])
-async def getbestblockhash() -> str:
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getbestblockhash()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getblockchaininfo', tags=["Blockchain Methods"])
-async def getblockchaininfo() -> str:
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getblockchaininfo()
-        return str(response_json)
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/gettxoutsetinfo', tags=["Blockchain Methods"])
-async def gettxoutsetinfo() -> str:
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.gettxoutsetinfo()
-        return str(response_json)
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getblockcount', tags=["Blockchain Methods"])
-async def getblockcount():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getblockcount()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getchaintips', tags=["Blockchain Methods"])
-async def getchaintips():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getchaintips()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getdifficulty', tags=["Blockchain Methods"])
-async def getdifficulty():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getdifficulty()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getmempoolinfo', tags=["Blockchain Methods"])
-async def getmempoolinfo():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getmempoolinfo()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)    
-
-
-@router.get('/getrawmempool', tags=["Blockchain Methods"])
-async def getrawmempool():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getrawmempool()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)    
-
-
-# @router.get('/getblockdeltas/{blockhash}', tags=["Blockchain Methods"])
-# async def getblockdeltas(blockhash):
-#     try:
-#         global rpc_connection
-#         response_json = await rpc_connection.getblockdeltas([blockhash])
-#         return response_json
-#     except ValidationError as ve:
-#         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-#     except Exception as x:
-#         return fastapi.Response(content=str(x), status_code=500)
-
-
-# @router.get('/getaddressmempool/{address}', tags=["Blockchain Methods"])
-# async def getaddressmempool(address):
-#     try:
-#         global rpc_connection
-#         response_json = await rpc_connection.getaddressmempool([address])
-#         return response_json
-#     except ValidationError as ve:
-#         return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-#     except Exception as x:
-#         return fastapi.Response(content=str(x), status_code=500)
-    
-
-@router.get('/getblock/{blockhash}', tags=["Blockchain Methods"])
-async def getblock(blockhash: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getblock(blockhash)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getblockheader/{blockhash}', tags=["Blockchain Methods"])
-async def getblockheader(blockhash: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getblockheader(blockhash)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getblockhash/{index}', tags=["Blockchain Methods"])
-async def getblock(index: int):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getblockhash(index)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/gettxout/{txid}/{vout_value}', tags=["Blockchain Methods"])
-async def gettxout(txid: str, vout_value: int, includemempool: bool = True):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.gettxout(txid, vout_value, includemempool)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/gettxoutproof/{txid}', tags=["Blockchain Methods"])
-async def gettxout(txid: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.gettxoutproof([txid])
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/verifytxoutproof/{proof_string}', tags=["Blockchain Methods"])
-async def verifytxoutproof(proof_string: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.verifytxoutproof(proof_string)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getinfo', tags=["Control Methods"])
-async def getinfo():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getinfo()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-    
-@router.get('/getmemoryinfo', tags=["Control Methods"])
-async def getmemoryinfo():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getmemoryinfo()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-    
-@router.get('/getblocksubsidy/{block_height}', tags=["Mining Methods"])
-async def getblock(block_height: int):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getblocksubsidy(block_height)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getblocktemplate', tags=["Mining Methods"])
-async def getblocktemplate():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getblocktemplate()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getmininginfo', tags=["Mining Methods"])
-async def getmininginfo():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getmininginfo()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getnextblocksubsidy', tags=["Mining Methods"])
-async def getnextblocksubsidy():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getnextblocksubsidy()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-                
-
-@router.get('/getnetworksolps/{block_height}/{window_size_in_blocks}', tags=["Mining Methods"])
-async def getblock(block_height: int, window_size_in_blocks: int):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getnetworksolps(window_size_in_blocks, block_height)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getaddednodeinfo', tags=["Network Methods"])
-async def getaddednodeinfo():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getaddednodeinfo(True)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-
-@router.get('/getnetworkinfo', tags=["Network Methods"])
-async def getnetworkinfo():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getnetworkinfo()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-
-@router.get('/getpeerinfo', tags=["Network Methods"])
-async def getpeerinfo():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getpeerinfo()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
+        self.status_code = status_code
+        self.error_msg = error_msg
         
+class ParsedDDServiceData(SqlAlchemyBase):
+    __tablename__ = 'parsed_dd_service_data'
+    ticket_type: str = sa.Column(sa.String, nullable=False, index=True)
+    registration_ticket_txid: str = sa.Column(sa.String, nullable=False, index=True, primary_key=True)
+    hash_of_candidate_image_file: str = sa.Column(sa.String, nullable=False, index=True)
+    pastel_id_of_submitter: str = sa.Column(sa.String, nullable=False, index=True)
+    pastel_block_hash_when_request_submitted: str = sa.Column(sa.String, nullable=False)
+    pastel_block_height_when_request_submitted: str = sa.Column(sa.String, nullable=False)
+    dupe_detection_system_version: str = sa.Column(sa.String, nullable=False)
+    candidate_image_thumbnail_webp_as_base64_string: str = sa.Column(sa.String, nullable=False)
+    collection_name_string: str = sa.Column(sa.String, nullable=False)
+    open_api_group_id_string: str = sa.Column(sa.String, nullable=False)
+    does_not_impact_the_following_collection_strings: str = sa.Column(sa.String, nullable=False)
+    overall_rareness_score: float = sa.Column(sa.Float, nullable=False)
+    group_rareness_score: float = sa.Column(sa.Float, nullable=False)
+    open_nsfw_score: float = sa.Column(sa.Float, nullable=False)
+    alternative_nsfw_scores: str = sa.Column(sa.String, nullable=False)
+    utc_timestamp_when_request_submitted: str = sa.Column(sa.String, nullable=False)
+    is_likely_dupe: str = sa.Column(sa.String, nullable=False)
+    is_rare_on_internet: str = sa.Column(sa.String, nullable=False)
+    is_pastel_openapi_request: str = sa.Column(sa.String, nullable=False)
+    is_invalid_sense_request: str = sa.Column(sa.String, nullable=False)
+    invalid_sense_request_reason: str = sa.Column(sa.String, nullable=False)
+    similarity_score_to_first_entry_in_collection: float = sa.Column(sa.Float, nullable=False)
+    cp_probability: float = sa.Column(sa.Float, nullable=False)
+    child_probability: float = sa.Column(sa.Float, nullable=False)
+    image_file_path: str = sa.Column(sa.String, nullable=False)
+    image_fingerprint_of_candidate_image_file: str = sa.Column(sa.String, nullable=False)
+    pct_of_top_10_most_similar_with_dupe_prob_above_25pct: float = sa.Column(sa.Float, nullable=False)
+    pct_of_top_10_most_similar_with_dupe_prob_above_33pct: float = sa.Column(sa.Float, nullable=False)
+    pct_of_top_10_most_similar_with_dupe_prob_above_50pct: float = sa.Column(sa.Float, nullable=False)
+    internet_rareness__min_number_of_exact_matches_in_page: str = sa.Column(sa.String, nullable=False)
+    internet_rareness__earliest_available_date_of_internet_results: str = sa.Column(sa.String, nullable=False)
+    internet_rareness__b64_image_strings_of_in_page_matches: str = sa.Column(sa.String, nullable=False)
+    internet_rareness__original_urls_of_in_page_matches: str = sa.Column(sa.String, nullable=False)
+    internet_rareness__result_titles_of_in_page_matches: str = sa.Column(sa.String, nullable=False)
+    internet_rareness__date_strings_of_in_page_matches: str = sa.Column(sa.String, nullable=False)
+    internet_rareness__misc_related_images_as_b64_strings: str = sa.Column(sa.String, nullable=False)
+    internet_rareness__misc_related_images_url: str = sa.Column(sa.String, nullable=False)
+    alternative_rare_on_internet__number_of_similar_results: str = sa.Column(sa.String, nullable=False)
+    alternative_rare_on_internet__b64_image_strings: str = sa.Column(sa.String, nullable=False)
+    alternative_rare_on_internet__original_urls: str = sa.Column(sa.String, nullable=False)
+    alternative_rare_on_internet__google_cache_urls: str = sa.Column(sa.String, nullable=False)
+    alternative_rare_on_internet__alt_strings: str = sa.Column(sa.String, nullable=False)
+    corresponding_pastel_blockchain_ticket_data: str = sa.Column(sa.String, nullable=False)
 
-@router.get('/getfeeschedule', tags=["Supernode Methods"])
-async def getfeeschedule():
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getfeeschedule()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
+class RawDDServiceData(SqlAlchemyBase):
+    __tablename__ = 'raw_dd_service_data'
+    ticket_type: str = sa.Column(sa.String, nullable=False, index=True)
+    registration_ticket_txid: str = sa.Column(sa.String, nullable=False, index=True, primary_key=True)
+    hash_of_candidate_image_file: str = sa.Column(sa.String, nullable=False, index=True)
+    pastel_id_of_submitter: str = sa.Column(sa.String, nullable=False, index=True)
+    pastel_block_hash_when_request_submitted: str = sa.Column(sa.String, nullable=False)
+    pastel_block_height_when_request_submitted: str = sa.Column(sa.String, nullable=False)
+    raw_dd_service_data_json: str = sa.Column(sa.String, nullable=False)
+    corresponding_pastel_blockchain_ticket_data: str = sa.Column(sa.String, nullable=False)
 
-
-@router.get('/masternode/{command_string}', tags=["Supernode Methods"])
-async def masternode(command_string: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.masternode(command_string)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/getrawtransaction/{txid}', tags=["Raw Transaction Methods"])
-async def getrawtransaction(txid: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.getrawtransaction(txid)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
+class PastelBlockData(SqlAlchemyBase):
+    __tablename__ = 'pastel_block_data'
+    block_hash = Column(String(64), nullable=False, index=True, primary_key=True)
+    block_height = Column(BigInteger, nullable=False, index=True)
+    previous_block_hash = Column(String(64), nullable=True, index=True)
+    transactions = relationship("PastelTransactionData", back_populates="block", cascade="all, delete-orphan")
+    timestamp = Column(DateTime, nullable=True)
     
+class PastelAddressData(SqlAlchemyBase):
+    __tablename__ = 'pastel_address_data'
+    pastel_address = Column(String(34), nullable=False, index=True, primary_key=True)
+    outputs = relationship("PastelTransactionOutputData", back_populates="address")
+    balance = Column(DECIMAL(precision=16, scale=8), nullable=False, default=0.0)
 
-@router.get('/decoderawtransaction/{hexstring}', tags=["Raw Transaction Methods"])
-async def decoderawtransaction(hexstring: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.decoderawtransaction(hexstring)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
+class PastelTransactionData(SqlAlchemyBase):
+    __tablename__ = 'pastel_transaction_data'
+    transaction_id = Column(String(64), nullable=False, index=True, primary_key=True)
+    inputs = relationship("PastelTransactionInputData", back_populates="transaction", cascade="all, delete-orphan")
+    outputs = relationship("PastelTransactionOutputData", back_populates="transaction", cascade="all, delete-orphan")
+    block_hash = Column(String(64), ForeignKey('pastel_block_data.block_hash'), nullable=True, index=True)
+    block = relationship("PastelBlockData", back_populates="transactions")
+    total_value = Column(DECIMAL(precision=16, scale=8), nullable=False, default=0.0)
+    confirmations = Column(BigInteger, nullable=False, default=0)
 
+class PastelTransactionInputData(SqlAlchemyBase):
+    __tablename__ = 'pastel_transaction_input_data'
+    input_id = Column(BigInteger, nullable=False, primary_key=True)
+    transaction_id = Column(String(64), ForeignKey('pastel_transaction_data.transaction_id'), nullable=False, index=True)
+    transaction = relationship("PastelTransactionData", back_populates="inputs")
+    previous_output_id = Column(BigInteger, ForeignKey('pastel_transaction_output_data.output_id'), nullable=False, index=True)
+    previous_output = relationship("PastelTransactionOutputData", back_populates="inputs")
 
-@router.get('/decodescript/{hexstring}', tags=["Raw Transaction Methods"])
-async def decodescript(hexstring: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.decodescript(hexstring)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/estimatefee/{nblocks}', tags=["Utility Methods"])
-async def estimatefee(nblocks: int):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.estimatefee(nblocks)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/validateaddress/{transparent_psl_address}', tags=["Utility Methods"])
-async def validateaddress(transparent_psl_address: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.validateaddress(transparent_psl_address)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/z_validateaddress/{shielded_psl_address}', tags=["Utility Methods"])
-async def z_validateaddress(shielded_psl_address: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.z_validateaddress(shielded_psl_address)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-                        
+class PastelTransactionOutputData(SqlAlchemyBase):
+    __tablename__ = 'pastel_transaction_output_data'
+    output_id = Column(BigInteger, nullable=False, primary_key=True)
+    transaction_id = Column(String(64), ForeignKey('pastel_transaction_data.transaction_id'), nullable=False, index=True)
+    transaction = relationship("PastelTransactionData", back_populates="outputs")
+    amount = Column(DECIMAL(precision=16, scale=8), nullable=False)
+    pastel_address = Column(String(34), ForeignKey('pastel_address_data.pastel_address'), nullable=False, index=True)
+    address = relationship("PastelAddressData", back_populates="outputs")
+    inputs = relationship("PastelTransactionInputData", back_populates="previous_output")
     
-@router.get('/list_all_openapi_tickets/', tags=["Ticket Methods"])
-@router.get('/list_all_openapi_tickets/{min_block_height}', tags=["Ticket Methods"])
-async def list_all_openapi_tickets(min_block_height: Optional[str] = '0'):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.tickets('list', 'action', 'all', min_block_height)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)    
-
-                        
-@router.get('/list_only_activated_openapi_tickets/', tags=["Ticket Methods"])
-@router.get('/list_only_activated_openapi_tickets/{min_block_height}', tags=["Ticket Methods"])
-async def list_only_activated_openapi_tickets(min_block_height: Optional[str] = '0'):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.tickets('list', 'action', 'active', min_block_height)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)    
+class CascadeCacheFileLocks(SqlAlchemyBase):
+    __tablename__ = 'cascade_cache_file_locks'
+    txid = Column(String(64), primary_key=True)
+    lock_created_at = Column(DateTime, default=datetime.datetime.utcnow)  # lock creation timestamp
     
-    
-@router.get('/list_only_inactive_openapi_tickets/', tags=["Ticket Methods"])
-@router.get('/list_only_inactive_openapi_tickets/{min_block_height}', tags=["Ticket Methods"])
-async def list_only_inactive_openapi_tickets(min_block_height: Optional[str] = '0'):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.tickets('list', 'action', 'inactive', min_block_height)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)    
-    
-    
-@router.get('/list_tickets_by_type/{ticket_type}', tags=["Ticket Methods"])
-@router.get('/list_tickets_by_type/{ticket_type}/{min_block_height}', tags=["Ticket Methods"])
-async def list_tickets_by_type(ticket_type: str, min_block_height: Optional[str] = '0'):
-#Possible values for ticket_type: 'id', 'nft', 'offer', 'accept', 'transfer', 'collection', 'collection-act', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act'
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.tickets('list', str(ticket_type), 'all', str(min_block_height))
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/list_active_tickets_by_type/{ticket_type}', tags=["Ticket Methods"])
-@router.get('/list_active_tickets_by_type/{ticket_type}/{min_block_height}', tags=["Ticket Methods"])
-async def list_active_tickets_by_type(ticket_type: str, min_block_height: Optional[str] = '0'):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.tickets('list', str(ticket_type), 'active', str(min_block_height))
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-                            
-
-@router.get('/list_inactive_tickets_by_type/{ticket_type}', tags=["Ticket Methods"])
-@router.get('/list_inactive_tickets_by_type/{ticket_type}/{min_block_height}', tags=["Ticket Methods"])
-async def list_inactive_tickets_by_type(ticket_type: str, min_block_height: Optional[str] = '0'):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.tickets('list', str(ticket_type), 'inactive', str(min_block_height))
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/find_action_ticket_by_pastelid/{pastelid}', tags=["Ticket Methods"])
-async def find_action_ticket_by_pastelid(pastelid: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.tickets('find', 'action', pastelid)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/find_action_activation_ticket_by_pastelid/{pastelid}', tags=["Ticket Methods"])
-async def find_action_ticket_by_pastelid(pastelid: str):
-    try:
-        global rpc_connection
-        response_json = await rpc_connection.tickets('find', 'action-act', pastelid)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-        
-
-@router.get('/get_ticket_by_txid/{txid}', tags=["Ticket Methods"])
-async def get_ticket_by_txid(txid: str):
-    try:
-        response_json = await get_pastel_blockchain_ticket_func(txid)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/get_all_ticket_data', tags=["High-Level Methods"])
-async def get_all_ticket_data() -> str:
-    try:
-        response_json = await get_all_pastel_blockchain_tickets_func()
-        return str(response_json)
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-    
-@router.get('/supernode_data', tags=["High-Level Methods"])
-async def supernode_data() -> str:
-    try:
-        response_json = await check_supernode_list_func()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-    
-@router.get('/get_network_storage_fees', tags=["High-Level Methods"])
-async def get_network_storage_fees() -> str:
-    try:
-        response_json = await get_network_storage_fees_func()
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-    
-@router.get('/verify_message_with_pastelid/{pastelid_pubkey}/{message_to_verify}/{pastelid_signature_on_message}', tags=["High-Level Methods"])
-async def verify_message_with_pastelid(pastelid_pubkey: str, message_to_verify: str, pastelid_signature_on_message: str) -> str:
-    try:
-        response_json = await verify_message_with_pastelid_func(pastelid_pubkey, message_to_verify, pastelid_signature_on_message)
-        return response_json
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-#Endpoint to respond with a PastelID file, given a desired password:
-@router.get('/testnet_pastelid_file_dispenser/{desired_password}', tags=["High-Level Methods"])
-async def testnet_pastelid_file_dispenser(desired_password: str):
-    try:
-        pastelid_pubkey, pastelid_data = await testnet_pastelid_file_dispenser_func(desired_password)
-        #send pastelid_data to user with StreamResponse, with the filename being the pastelid_pubkey:
-        response = StreamingResponse([pastelid_data], media_type="application/binary")
-        response.headers["Content-Disposition"] = f"attachment; filename=ticket.{pastelid_pubkey}"
-        return response
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-
-@router.get('/get_parsed_dd_service_results_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
-async def get_parsed_dd_service_results_by_registration_ticket_txid(txid: str):
-    try:
-        parsed_dd_service_data, is_cached_response = await get_parsed_dd_service_results_by_registration_ticket_txid_func(txid)
-        return parsed_dd_service_data
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/get_raw_dd_service_results_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
-async def get_raw_dd_service_results_by_registration_ticket_txid(txid: str):
-    try:
-        raw_dd_service_data, is_cached_response = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid)
-        return raw_dd_service_data
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-    
-@router.get('/get_publicly_accessible_cascade_file_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
-async def get_publicly_accessible_cascade_file_by_registration_ticket_txid(txid: str):
-    try:
-        decoded_response, original_file_name_string = await download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid)
-        content_disposition_string = f"attachment; filename={original_file_name_string}"
-        return StreamingResponse(io.BytesIO(decoded_response), media_type="application/octet-stream", headers={"Content-Disposition": content_disposition_string})
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-
-@router.get('/get_parsed_dd_service_results_by_image_file_hash/{image_file_hash}', tags=["OpenAPI Methods"])
-async def get_parsed_dd_service_results_by_image_file_hash(image_file_hash: str):
-    try:
-        parsed_dd_service_data = await get_parsed_dd_service_results_by_image_file_hash_func(image_file_hash)
-        return parsed_dd_service_data
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-   
-
-@router.get('/get_raw_dd_service_results_by_image_file_hash/{image_file_hash}', tags=["OpenAPI Methods"])
-async def get_raw_dd_service_results_by_image_file_hash(image_file_hash: str):
-    try:
-        raw_dd_service_data = await get_raw_dd_service_results_by_image_file_hash_func(image_file_hash)
-        return raw_sense_data
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/get_parsed_dd_service_results_by_pastel_id_of_submitter/{pastel_id_of_submitter}', tags=["OpenAPI Methods"])
-async def get_parsed_dd_service_results_by_pastel_id_of_submitter(pastel_id_of_submitter: str):
-    try:
-        parsed_dd_service_data = await get_parsed_dd_service_results_by_pastel_id_of_submitter_func(pastel_id_of_submitter)
-        return parsed_dd_service_data
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/get_raw_dd_service_results_by_pastel_id_of_submitter/{pastel_id_of_submitter}', tags=["OpenAPI Methods"])
-async def get_raw_dd_service_results_by_pastel_id_of_submitter(pastel_id_of_submitter: str):
-    try:
-        raw_dd_service_data = await get_raw_dd_service_results_by_pastel_id_of_submitter_func(pastel_id_of_submitter)
-        return raw_dd_service_data
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-
-@router.get('/get_parsed_dd_service_results_by_pastel_block_hash_when_request_submitted/{pastel_block_hash_when_request_submitted}', tags=["OpenAPI Methods"])
-async def get_parsed_dd_service_results_by_pastel_block_hash_when_request_submitted(pastel_block_hash_when_request_submitted: str):
-    try:
-        parsed_dd_service_data = await get_parsed_dd_service_results_by_pastel_block_hash_when_request_submitted_func(pastel_block_hash_when_request_submitted)
-        return parsed_dd_service_data
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/get_raw_dd_service_results_by_pastel_block_hash_when_request_submitted/{pastel_block_hash_when_request_submitted}', tags=["OpenAPI Methods"])
-async def get_raw_dd_service_results_by_pastel_block_hash_when_request_submitted(pastel_block_hash_when_request_submitted: str):
-    try:
-        raw_dd_service_data = await get_raw_dd_service_results_by_pastel_block_hash_when_request_submitted_func(pastel_block_hash_when_request_submitted)
-        return raw_dd_service_data
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-
-@router.get('/get_parsed_dd_service_results_by_pastel_block_height_when_request_submitted/{pastel_block_height_when_request_submitted}', tags=["OpenAPI Methods"])
-async def get_parsed_dd_service_results_by_pastel_block_height_when_request_submitted(pastel_block_height_when_request_submitted: str):
-    try:
-        parsed_dd_service_data = await get_parsed_dd_service_results_by_pastel_block_height_when_request_submitted_func(pastel_block_height_when_request_submitted)
-        return parsed_dd_service_data
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/get_raw_dd_service_results_by_pastel_block_height_when_request_submitted/{pastel_block_height_when_request_submitted}', tags=["OpenAPI Methods"])
-async def get_raw_dd_service_results_by_pastel_block_height_when_request_submitted(pastel_block_height_when_request_submitted: str):
-    try:
-        raw_dd_service_data = await get_raw_dd_service_results_by_pastel_block_height_when_request_submitted_func(pastel_block_height_when_request_submitted)
-        return raw_dd_service_data
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-    
-
-@router.get('/get_current_total_number_of_registered_sense_fingerprints/', tags=["OpenAPI Methods"])
-async def get_current_total_number_of_registered_sense_fingerprints():
-    try:
-        fingerprint_counter = await get_current_total_number_of_registered_sense_fingerprints_func()
-        return fingerprint_counter
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500) 
-
-
-@router.get('/get_current_total_number_and_size_and_average_size_of_registered_cascade_files/', tags=["OpenAPI Methods"])
-async def get_current_total_number_and_size_and_average_size_of_registered_cascade_files():
-    try:
-        response = await get_current_total_number_and_size_and_average_size_of_registered_cascade_files_func()
-        return response
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500) 
-
-    
-@router.get('/get_usernames_from_pastelid/{pastelid}', tags=["OpenAPI Methods"])
-async def get_usernames_from_pastelid(pastelid : str):
-    try:
-        response = await get_usernames_from_pastelid_func(pastelid)
-        return JSONResponse(content={"pastelid_query": pastelid, "matching_usernames": response})
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)     
-
-
-@router.get('/get_all_registration_ticket_txids_corresponding_to_a_collection_ticket_txid/{collection_ticket_txid}', tags=["OpenAPI Methods"])
-async def get_all_registration_ticket_txids_corresponding_to_a_collection_ticket_txid(collection_ticket_txid : str):
-    try:
-        response = await get_all_registration_ticket_txids_corresponding_to_a_collection_ticket_txid_func(collection_ticket_txid)
-        return response
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)     
-
-
-@router.get('/get_pastelid_from_username/{username}', tags=["OpenAPI Methods"])
-async def get_pastelid_from_username(username : str):
-    try:
-        response = await get_pastelid_from_username_func(username)
-        return JSONResponse(content={"username_query": username, "matching_pastelid": response})
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)     
-
-    
-@router.get('/populate_database_with_all_dd_service_data', tags=["OpenAPI Methods"])
-async def populate_database_with_all_dd_service_data(background_tasks: BackgroundTasks):
-    try:
-        background_tasks.add_task(populate_database_with_all_dd_service_data_func)
-        return 'Started background task to populate database with all sense data...'
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
-
-
-@router.get('/run_bulk_test_cascade/{num_downloads}', tags=["OpenAPI Methods"])
-async def run_bulk_test_cascade(num_downloads: int = Query(5, description="Number of concurrent Cascade downloads to launch for test. Default is 5.")):
-    try:
-        combined_output_dict = await bulk_test_cascade_func(num_downloads)
-        return combined_output_dict
-    except ValidationError as ve:
-        return fastapi.Response(content=ve.error_msg, status_code=ve.status_code)
-    except Exception as x:
-        return fastapi.Response(content=str(x), status_code=500)
+class BadTXID(SqlAlchemyBase):
+    __tablename__ = 'bad_txids'
+    id = sa.Column(sa.Integer, primary_key=True, autoincrement=True)
+    txid = sa.Column(sa.String, nullable=False, index=True)
+    ticket_type = sa.Column(sa.String, nullable=False, index=True)
+    reason_txid_is_bad = sa.Column(sa.String, nullable=True)
+    datetime_txid_marked_as_bad = sa.Column(sa.DateTime, default=datetime.datetime.now, index=True)
+    failed_attempts = sa.Column(sa.Integer, default=0)
+    next_attempt_time = sa.Column(sa.DateTime, default=datetime.datetime.now)
