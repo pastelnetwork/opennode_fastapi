@@ -1056,7 +1056,7 @@ async def download_cascade_file_test_func(txid: str) -> dict:
         
 def get_walletnode_log_data_func():
     log_file_path = '/home/ubuntu/.pastel/walletnode.log'
-    command = f'tail -n 250 {log_file_path}'
+    command = f'tail -n 500 {log_file_path}'
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, shell=True)
         output, _ = process.communicate()
@@ -1178,7 +1178,7 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
         try:
             finished, unfinished = await asyncio.wait(download_tasks, timeout=seconds_to_wait_for_all_files_to_finish_downloading)
             max_cancel_attempts = 3  # Set maximum cancel attempts
-            cancel_timeout = 5  # Set cancel timeout
+            cancel_timeout = 20  # Set cancel timeout
             status_df = pd.DataFrame()
             txid_log_dict = {}            
             if update_task in finished:
@@ -1201,7 +1201,7 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
                     break
                 else:  # This block runs if we have gone through all the attempts without breaking
                     log.error('Update task did not finish even after multiple cancellation attempts. Aborting.')
-                    return None, None  # Or however you want to handle this situation
+                    return None, None
         except Exception as e:
             log.error(f'Exception occurred while waiting for download tasks to finish: {e}')
         log.info('All download tasks finished.')
@@ -1209,9 +1209,6 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
         download_df = pd.DataFrame(download_data)
         download_df['log_lines'] = download_df['txid'].map(txid_log_dict) 
         download_df['txid'] = download_df['txid'].astype(str)  # Ensure the 'txid' column has the same data type in both dataframes
-        # check that pd.merge(download_df, status_df, how='left', on='txid') will work:
-        print('Columns in download_df:', download_df.columns)
-        print('Columns in status_df:', status_df.columns)
         if 'txid' in status_df.columns and download_df['txid'].isin(status_df['txid']).sum() != download_df.shape[0]:
             df = pd.merge(download_df, status_df, how='left', on='txid')
         else:
