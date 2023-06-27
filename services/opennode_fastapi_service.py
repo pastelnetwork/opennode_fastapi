@@ -1013,7 +1013,7 @@ def parse_walletnode_log_data_func(log_data):
             parsed_data.append(data)
     for data in parsed_data:  # add the list of downloaded supernodes and the count to each log line
         if 'txid' in data:
-            data['list_of_sn_ip_addresses_that_file_parts_we_downloaded_from'] = list(downloaded_supernodes.get(data['txid'], set()))
+            data['list_of_sn_ip_addresses_that_provided_file_chunks'] = list(downloaded_supernodes.get(data['txid'], set()))
             data['number_of_downloaded_parts'] = len(downloaded_supernodes.get(data['txid'], set()))
     return pd.DataFrame(parsed_data)            
             
@@ -1062,7 +1062,10 @@ async def get_random_cascade_txids_func(n: int) -> List[str]:
         cascade_ticket_dict_df = pd.DataFrame(cascade_ticket_dict).T
         cascade_ticket_dict_df_filtered = cascade_ticket_dict_df[cascade_ticket_dict_df['action_type'] == 'cascade'].drop_duplicates(subset=['txid'])
         txids = cascade_ticket_dict_df_filtered['txid'].tolist()
-        txids_sample = random.sample(txids, min(3*n, len(txids))) # Sample 3n TXIDs to increase the chance of getting enough public ones.
+        if n < 10:
+            txids_sample = random.sample(txids, min(6*n, len(txids))) # Sample 6n TXIDs to increase the chance of getting enough public ones.
+        else:
+            txids_sample = random.sample(txids, min(3*n, len(txids))) # Sample 3n TXIDs to increase the chance of getting enough public ones.
         accessible_txids = []
         for txid in txids_sample:
             try:
@@ -1089,7 +1092,6 @@ async def get_random_cascade_txids_func(n: int) -> List[str]:
     
 async def download_cascade_file_test_func(txid: str) -> dict:
     try:
-        log.info(f'Starting test download for txid {txid}...')
         start_time = datetime.datetime.now()
         use_cascade_file_cache = False
         result = await download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid, use_cascade_file_cache)
@@ -1209,9 +1211,9 @@ def create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_file
         'total_number_of_files_tested': number_of_concurrent_downloads,
         'number_of_files_downloaded': [len(df)],
         'finished_before_timeout': [finished_before_timeout],
-        'percentage_finished_before_timeout': [finished_before_timeout / total_number_of_files_tested * 100],
+        'percentage_finished_before_timeout': [finished_before_timeout / number_of_concurrent_downloads * 100],
         'finished_within_one_min': [finished_within_one_min],
-        'percentage_finished_within_one_minute': [finished_within_one_min / total_number_of_files_tested * 100],
+        'percentage_finished_within_one_minute': [finished_within_one_min / number_of_concurrent_downloads * 100],
         'average_file_size_in_megabytes': [df['file_size_in_megabytes'].mean()],
         'max_file_size_in_megabytes': [df['file_size_in_megabytes'].max()],
         'median_download_speed_in_mb_per_second': [df['download_speed_in_mb_per_second'].median()],
@@ -1228,7 +1230,7 @@ async def bulk_test_cascade_func(n: int):
         log.info(f'Got {len(txids)} txids for testing.')
         seconds_to_wait_for_all_files_to_finish_downloading = 500
         df, txid_log_dict = await perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading, status_df)
-        summary_df = create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading)
+        summary_df = create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading, n)
         log.info('Processing test results...')
         df_dict = df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
         summary_dict = summary_df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
