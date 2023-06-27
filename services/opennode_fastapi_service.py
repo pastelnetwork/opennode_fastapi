@@ -100,15 +100,6 @@ ch.setFormatter(formatter)
 log.addHandler(fh)
 log.addHandler(ch)
 
-class MemoryHandler(logging.Handler):
-    def __init__(self):
-        super().__init__()
-        self.log = ""
-
-    def emit(self, record):
-        self.log += self.format(record) + "\n"
-
-
 # Initialize the LRU cache and cache directory
 cache_dir = "/home/ubuntu/cascade_opennode_fastapi_cache"
 #create cache directory if it doesn't exist
@@ -777,9 +768,7 @@ async def get_bad_txids_from_db_func(type):
 
 async def check_and_update_cascade_ticket_bad_txid_func(txid: str, session):
     try:
-        log.info("Executing check_and_update_cascade_ticket_bad_txid_func...")
         query = select(BadTXID).where(BadTXID.txid == txid)
-        log.info("Executing query...")
         result = await session.execute(query)
         bad_txid_exists = result.scalars().first()
         if bad_txid_exists:
@@ -889,7 +878,7 @@ async def verify_downloaded_cascade_file_func(file_data, expected_hash, expected
         return error_msg
     
 
-async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str):
+async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str, use_cascade_file_cache: bool = True):
     global cache
     log.info(f'Starting download process for txid {txid}.')
     try:
@@ -911,13 +900,17 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
             if not is_publicly_accessible:
                 log.warning(f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!')
                 return f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!', ""
-            if txid in cache and os.path.exists(cache[txid]):  # Check if the file is already in cache and exists in the cache_dir
-                log.info(f"File is already cached, returning the cached file for txid {txid}...")
-                async with aiofiles.open(cache[txid], mode='rb') as f:
-                    decoded_response = await f.read()
-                return decoded_response, original_file_name_string
+            if use_cascade_file_cache:
+                if txid in cache and os.path.exists(cache[txid]):  # Check if the file is already in cache and exists in the cache_dir
+                    log.info(f"File is already cached, returning the cached file for txid {txid}...")
+                    async with aiofiles.open(cache[txid], mode='rb') as f:
+                        decoded_response = await f.read()
+                    return decoded_response, original_file_name_string
             log.info(f'Now attempting to download the file from Cascade API for txid {txid}...')
             cache_file_path, decoded_response = await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir)
+            if cache_file_path is None or decoded_response is None:
+                log.warning(f"Skipping file download for txid {txid} as it's already in progress.")
+                return "File download in progress.", ""            
             if isinstance(decoded_response, str) and decoded_response.startswith("Error"):
                 log.error(f'An error occurred while downloading the file for txid {txid}. Error: {decoded_response}')
                 return decoded_response, ""
@@ -983,9 +976,12 @@ def parse_walletnode_log_data_func(log_data):
         return pd.DataFrame()
     log_pattern = r'\[(.*?)\]\s+INFO\s+(.*?):\s+(.*?)\sserver_ip=(.*?)\s(.*?)$'
     txid_pattern = r'txid=(\w+)'  # regex pattern to match txid
+    downloaded_pattern = r'Downloaded from supernode address=(.*?)\s'  # pattern to match downloaded supernodes
     parsed_data = []
     current_year = datetime.datetime.now().year  # get the current year
-    excluded_keys = {'KB', 'nodes', 'tries', 'task'}  # keys you want to exclude
+    excluded_keys = {'KB', 'nodes', 'tries', 'task', 'within_2_min', 'within_3_min', 'within_5_min'}  # keys you want to exclude
+    log_indices = {}  # holds the log line indices per txid
+    downloaded_supernodes = {}  # holds the supernode ip addresses per txid
     for line in log_data.split('\n'):
         match = re.match(log_pattern, line)
         if match:
@@ -994,13 +990,20 @@ def parse_walletnode_log_data_func(log_data):
                 'log_datetime': pd.to_datetime(datetime_str, format='%b %d %H:%M:%S.%f %Y', errors='coerce'),  # add %Y to the format
                 'source': match.group(2),
                 'last_log_status': match.group(3),
-                'server_ip': match.group(4),
             }
             additional_data = match.group(5)
             txid_match = re.search(txid_pattern, additional_data)
             if txid_match:
                 data['txid'] = txid_match.group(1)
                 additional_data = additional_data.replace(f'txid={data["txid"]}', '')
+                log_indices[data['txid']] = log_indices.get(data['txid'], 0) + 1  # increment index for this txid
+                data['log_index'] = log_indices[data['txid']]  # set this line's index to the current count for this txid
+            downloaded_match = re.search(downloaded_pattern, additional_data)
+            if downloaded_match:
+                supernode_ip = downloaded_match.group(1)
+                if data['txid'] not in downloaded_supernodes:
+                    downloaded_supernodes[data['txid']] = set()
+                downloaded_supernodes[data['txid']].add(supernode_ip)
             additional_data = additional_data.strip().split(' ')
             for item in additional_data:
                 if '=' in item:
@@ -1008,8 +1011,12 @@ def parse_walletnode_log_data_func(log_data):
                     if key not in excluded_keys:  # only add to the data dict if key is not in the excluded_keys set
                         data[key] = value
             parsed_data.append(data)
-    return pd.DataFrame(parsed_data)
-
+    for data in parsed_data:  # add the list of downloaded supernodes and the count to each log line
+        if 'txid' in data:
+            data['list_of_sn_ip_addresses_that_file_parts_we_downloaded_from'] = list(downloaded_supernodes.get(data['txid'], set()))
+            data['number_of_downloaded_parts'] = len(downloaded_supernodes.get(data['txid'], set()))
+    return pd.DataFrame(parsed_data)            
+            
 
 def update_cascade_status_func(df):
     log_data = get_walletnode_log_data_func()
@@ -1084,19 +1091,21 @@ async def download_cascade_file_test_func(txid: str) -> dict:
     try:
         log.info(f'Starting test download for txid {txid}...')
         start_time = datetime.datetime.now()
-        result = await download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid)
+        use_cascade_file_cache = False
+        result = await download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid, use_cascade_file_cache)
         end_time = datetime.datetime.now()
         file_data, file_name = result
-        file_size = len(file_data)
-        download_speed = file_size / (end_time - start_time).total_seconds()
+        file_size_in_megabytes = len(file_data)/(1024.0**2)
+        download_speed_in_mb_per_second = file_size_in_megabytes / (end_time - start_time).total_seconds()
         log.info(f'Successfully finished test download for txid {txid}.')
         return {
             'txid': txid,
             'test_datetime_started': start_time,
             'test_datetime_finished': end_time,
-            'file_size': file_size,
+            'file_size_in_megabytes': file_size_in_megabytes,
             'file_name': file_name,
-            'download_speed': download_speed
+            'download_time': float((end_time - start_time).total_seconds()),
+            'download_speed_in_mb_per_second': download_speed_in_mb_per_second
         }
     except Exception as e:
         log.error(f"Exception occurred in download_cascade_file_test_func for txid {txid}: {e}")
@@ -1140,24 +1149,14 @@ async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
     return converted_dict
 
 
-async def bulk_test_cascade_func(n: int):
+async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading, status_df):
     try:
         txid_log_dict = {}
-        seconds_to_wait_for_all_files_to_finish_downloading = 500
-        log_stream = io.StringIO()
-        stream_handler = logging.StreamHandler(log_stream)
-        mem_handler = logging.handlers.MemoryHandler(capacity=1024*100, target=stream_handler) # Increase capacity if needed
-        mem_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        log.addHandler(mem_handler)        
-        datetime_test_started = datetime.datetime.now()
-        log.info('Starting bulk test of cascade...')
-        status_df = pd.DataFrame()
-        txids = await get_random_cascade_txids_func(n)
-        log.info(f'Got {len(txids)} txids for testing.')
         try:
             update_task = asyncio.create_task(update_cascade_status_periodically_func(status_df))
         except Exception as e:
             log.error(f'Exception occurred while starting update task: {e}')
+        await asyncio.sleep(2)
         try:    
             download_tasks = [asyncio.create_task(download_cascade_file_test_func(txid)) for txid in txids]
         except Exception as e:
@@ -1165,65 +1164,82 @@ async def bulk_test_cascade_func(n: int):
         log.info('Waiting for download tasks to finish...')
         try:
             finished, unfinished = await asyncio.wait(download_tasks, timeout=seconds_to_wait_for_all_files_to_finish_downloading)
+            max_cancel_attempts = 3  # Set maximum cancel attempts
+            cancel_timeout = 5  # Set cancel timeout
             if update_task in finished:
                 status_df, txid_log_dict = update_task.result()
             else:
-                update_task.cancel()
-                await asyncio.wait([update_task], timeout=5)
-                if update_task.done():
+                for attempt in range(max_cancel_attempts):
+                    update_task.cancel()
                     try:
-                        status_df, txid_log_dict = update_task.result()
-                    except asyncio.exceptions.CancelledError:
-                        log.warning('Update task was cancelled.')
-                        status_df = pd.DataFrame()
-                        txid_log_dict = {}
-                else:  # Handle the case where the update task still didn't finish.
-                    log.error('Update task did not finish within the expected time.')
+                        await asyncio.wait([update_task], timeout=cancel_timeout)
+                    except asyncio.exceptions.TimeoutError:
+                        log.warning(f'Update task did not finish within the expected time. Attempt {attempt + 1} of {max_cancel_attempts}.')
+                        continue
+
+                    if update_task.done():
+                        try:
+                            status_df, txid_log_dict = update_task.result()
+                        except asyncio.exceptions.CancelledError:
+                            log.warning('Update task was cancelled.')
+                            status_df = pd.DataFrame()
+                            txid_log_dict = {}
+                    break
+                else:  # This block runs if we have gone through all the attempts without breaking
+                    log.error('Update task did not finish even after multiple cancellation attempts. Aborting.')
+                    return None, None  # Or however you want to handle this situation
         except Exception as e:
             log.error(f'Exception occurred while waiting for download tasks to finish: {e}')
         log.info('All download tasks finished.')
         download_data = [t.result() for t in finished if t.result() is not None and 'txid' in t.result()]
         download_df = pd.DataFrame(download_data)
-        download_df['log_lines'] = download_df['txid'].map(txid_log_dict)        
+        download_df['log_lines'] = download_df['txid'].map(txid_log_dict) 
+        download_df['txid'] = download_df['txid'].astype(str)  # Ensure the 'txid' column has the same data type in both dataframes
         df = pd.merge(download_df, status_df, how='left', on='txid')
-        log.info('Processing test results...')
         df['time_diff'] = (df['datetime_finished'] - df['datetime_started']).dt.total_seconds()
-        df['within_2_min'] = (df['time_diff'] <= 120).astype(int)  # 2 minutes = 120 seconds
-        df['within_3_min'] = (df['time_diff'] <= 180).astype(int)  # 3 minutes = 180 seconds
-        df['within_5_min'] = (df['time_diff'] <= 300).astype(int)  # 5 minutes = 300 seconds
-        log.info('Writing test results to CSV...')
-        try:
-            df.to_csv('cascade_bulk_download_test_results__data.csv', index=False)
-        except Exception as e:
-            log.error(f'Exception occurred while writing cascade bulk download test results CSV: {e}')
-        within_2_min_percentage = df['within_2_min'].mean() * 100
-        within_3_min_percentage = df['within_3_min'].mean() * 100
-        within_5_min_percentage = df['within_5_min'].mean() * 100
-        summary_df = pd.DataFrame({
-            'Finished Within 2 Min (%)': [within_2_min_percentage],
-            'Finished Within 3 Min (%)': [within_3_min_percentage],
-            'Finished Within 5 Min (%)': [within_5_min_percentage],
-        })
-        try:
-            summary_df.to_csv('cascade_bulk_download_test_results__summary.csv', index=False)
-        except Exception as e:
-            log.error(f'Exception occurred while writing cascade bulk download test summary CSV: {e}')
-        log.info('Finished bulk test of cascade.')
+        return df, txid_log_dict
+    except Exception as e:
+        log.error(f'Error occurred while performing download tasks: {e}', exc_info=True)
+
+
+def create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading, number_of_concurrent_downloads):
+    finished_before_timeout = df[df['time_diff'] < seconds_to_wait_for_all_files_to_finish_downloading].shape[0]
+    finished_within_one_min = df[df['time_diff'] < 60].shape[0]
+    summary_df = pd.DataFrame({
+        'total_number_of_files_tested': number_of_concurrent_downloads,
+        'number_of_files_downloaded': [len(df)],
+        'finished_before_timeout': [finished_before_timeout],
+        'percentage_finished_before_timeout': [finished_before_timeout / total_number_of_files_tested * 100],
+        'finished_within_one_min': [finished_within_one_min],
+        'percentage_finished_within_one_minute': [finished_within_one_min / total_number_of_files_tested * 100],
+        'average_file_size_in_megabytes': [df['file_size_in_megabytes'].mean()],
+        'max_file_size_in_megabytes': [df['file_size_in_megabytes'].max()],
+        'median_download_speed_in_mb_per_second': [df['download_speed_in_mb_per_second'].median()],
+    })
+    return summary_df
+
+
+async def bulk_test_cascade_func(n: int):
+    try:
+        datetime_test_started = datetime.datetime.now()
+        log.info('Starting bulk test of cascade...')
+        status_df = pd.DataFrame()
+        txids = await get_random_cascade_txids_func(n)
+        log.info(f'Got {len(txids)} txids for testing.')
+        seconds_to_wait_for_all_files_to_finish_downloading = 500
+        df, txid_log_dict = await perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading, status_df)
+        summary_df = create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading)
+        log.info('Processing test results...')
         df_dict = df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
-        summary_df_dict = summary_df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
+        summary_dict = summary_df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
         combined_output_dict = {
             'datetime_test_started': datetime_test_started.strftime('%Y-%m-%dT%H:%M:%S'),
             'duration_of_test_in_seconds': round((datetime.datetime.now() - datetime_test_started).total_seconds(), 2),
             'cascade_bulk_download_test_results__data': df_dict,
-            'cascade_bulk_download_test_results__summary': summary_df_dict
+            'cascade_bulk_download_test_results__summary': summary_dict
         }
-        log.info('Converting output dict to make it safe for JSON...')
+        log.info('Finished bulk test of cascade.')
         combined_output_dict = await convert_dict_to_make_it_safe_for_json_func(combined_output_dict)
-        mem_handler.flush()
-        log_output = log_stream.getvalue()
-        log_output = log_output.replace('\n', '<br>')        
-        combined_output_dict['complete_output_log_during_test'] = log_output
-        log.removeHandler(mem_handler)
         return combined_output_dict
     except Exception as e:
         log.error(f'Error occurred during the bulk test of cascade: {e}', exc_info=True)
