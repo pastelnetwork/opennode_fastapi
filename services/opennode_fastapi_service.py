@@ -359,10 +359,10 @@ def get_local_machine_supernode_data_func():
     local_machine_ip_with_proper_port = local_machine_ip + ':' + proper_port_number
     local_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['ipaddress:port'] == local_machine_ip_with_proper_port]
     if len(local_machine_supernode_data) == 0:
-        print('Local machine is not a supernode!')
+        log.error('Local machine is not a supernode!')
         return 0, 0, 0, 0
     else:
-        print('Local machine is a supernode!')
+        log.info('Local machine is a supernode!')
         local_sn_rank = local_machine_supernode_data['rank'].values[0]
         local_sn_pastelid = local_machine_supernode_data['extKey'].values[0]
     return local_machine_supernode_data, local_sn_rank, local_sn_pastelid, local_machine_ip_with_proper_port
@@ -372,7 +372,7 @@ def get_sn_data_from_pastelid_func(specified_pastelid):
     supernode_list_full_df = check_supernode_list_func()
     specified_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['extKey'] == specified_pastelid]
     if len(specified_machine_supernode_data) == 0:
-        print('Specified machine is not a supernode!')
+        log.error('Specified machine is not a supernode!')
         return pd.DataFrame()
     else:
         return specified_machine_supernode_data
@@ -382,7 +382,7 @@ def get_sn_data_from_sn_pubkey_func(specified_sn_pubkey):
     supernode_list_full_df = check_supernode_list_func()
     specified_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['pubkey'] == specified_sn_pubkey]
     if len(specified_machine_supernode_data) == 0:
-        print('Specified machine is not a supernode!')
+        log.error('Specified machine is not a supernode!')
         return pd.DataFrame()
     else:
         return specified_machine_supernode_data
@@ -442,12 +442,12 @@ async def get_pastel_blockchain_ticket_func(txid):
 
 async def get_all_pastel_blockchain_tickets_func(verbose=0):
     if verbose:
-        print('Now retrieving all Pastel blockchain tickets...')
+        log.info('Now retrieving all Pastel blockchain tickets...')
     tickets_obj = {}
     list_of_ticket_types = ['id', 'nft', 'offer', 'accept', 'transfer', 'royalty', 'username', 'ethereumaddress', 'action', 'action-act'] # 'collection', 'collection-act'
     for current_ticket_type in list_of_ticket_types:
         if verbose:
-            print('Getting ' + current_ticket_type + ' tickets...')
+            log.info('Getting ' + current_ticket_type + ' tickets...')
         response = await rpc_connection.tickets('list', current_ticket_type)
         if response is not None and len(response) > 0:
             tickets_obj[current_ticket_type] = await get_df_json_from_tickets_list_rpc_response_func(response)
@@ -482,24 +482,24 @@ async def get_pastelid_from_username_func(username):
 
 
 async def testnet_pastelid_file_dispenser_func(password, verbose=0):
-    print('Now generating a pastelid...')
+    log.info('Now generating a pastelid...')
     response = await rpc_connection.pastelid('newkey', password)
     pastelid_data = ''
     pastelid_pubkey = ''
     if response is not None and len(response) > 0:
         if 'pastelid' in response:
-            print('The pastelid is ' + response['pastelid'])    
-            print('Now checking to see if the pastelid file exists...')
+            log.info('The pastelid is ' + response['pastelid'])    
+            log.info('Now checking to see if the pastelid file exists...')
             pastelid_pubkey = response['pastelid']
             if os.path.exists('~/.pastel/testnet3/pastelkeys/' + response['pastelid']):
-                print('The pastelid file exists!')
+                log.info('The pastelid file exists!')
                 with open('~/.pastel/testnet3/pastelkeys/' + response['pastelid'], 'rb') as f:
                     pastelid_data = f.read()
                     return pastelid_data                     
             else:
-                print('The pastelid file does not exist!')
+                log.info('The pastelid file does not exist!')
         else:
-            print('There was an issue creating the pastelid!')
+            log.error('There was an issue creating the pastelid!')
     return pastelid_pubkey, pastelid_data
 
 
@@ -721,7 +721,7 @@ async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: s
         _, is_cached_response = await check_for_parsed_dd_service_result_in_db_func(txid) # After parsing the data, check again if it does not exist in the database before saving:
         if not is_cached_response:
             await save_parsed_dd_service_data_to_db_func(parsed_dd_service_data)
-            print(f'[Timestamp: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Finished generating Parsed DD-Service data for ticket type {str(parsed_dd_service_data.ticket_type)} and txid {txid} and saving it to the local sqlite database! Took {round(time.time() - start_time, 2)} seconds in total.')
+            log.info(f'Finished generating Parsed DD-Service data for ticket type {str(parsed_dd_service_data.ticket_type)} and txid {txid} and saving it to the local sqlite database! Took {round(time.time() - start_time, 2)} seconds in total.')
         return parsed_dd_service_data, False
     except Exception as e:
         log.error(f'Error while executing `get_parsed_dd_service_results_by_registration_ticket_txid_func`: {e}')
@@ -957,101 +957,42 @@ async def populate_database_with_all_dd_service_data_func():
             pass
 
 
-def get_walletnode_log_data_func():
-    log_file_path = '/home/ubuntu/.pastel/walletnode.log'
-    command = f'tail -n 100 {log_file_path}'
-    try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, shell=True)
-        output, _ = process.communicate()
-        log_data = output.decode('utf-8')
-        return log_data
-    except Exception as e:
-        log.error(f'An error occurred while trying to get data from the wallet node log file! Error message: {e}')
-        return None
-    
-
-def parse_walletnode_log_data_func(log_data):
-    if log_data is None:
-        print('Cannot parse wallet node log data, as it is None!')
-        return pd.DataFrame()
-    log_pattern = r'\[(.*?)\]\s+INFO\s+(.*?):\s+(.*?)\sserver_ip=(.*?)\s(.*?)$'
-    txid_pattern = r'txid=(\w+)'  # regex pattern to match txid
-    downloaded_pattern = r'Downloaded from supernode address=(.*?)\s'  # pattern to match downloaded supernodes
-    parsed_data = []
-    current_year = datetime.datetime.now().year  # get the current year
-    excluded_keys = {'KB', 'nodes', 'tries', 'task', 'within_2_min', 'within_3_min', 'within_5_min'}  # keys you want to exclude
-    log_indices = {}  # holds the log line indices per txid
-    downloaded_supernodes = {}  # holds the supernode ip addresses per txid
-    for line in log_data.split('\n'):
-        match = re.match(log_pattern, line)
-        if match:
-            datetime_str = match.group(1) + f" {current_year}"  # append the current year
-            data = {
-                'log_datetime': pd.to_datetime(datetime_str, format='%b %d %H:%M:%S.%f %Y', errors='coerce'),  # add %Y to the format
-                'source': match.group(2),
-                'last_log_status': match.group(3),
-            }
-            additional_data = match.group(5)
-            txid_match = re.search(txid_pattern, additional_data)
-            if txid_match:
-                data['txid'] = txid_match.group(1)
-                additional_data = additional_data.replace(f'txid={data["txid"]}', '')
-                log_indices[data['txid']] = log_indices.get(data['txid'], 0) + 1  # increment index for this txid
-                data['log_index'] = log_indices[data['txid']]  # set this line's index to the current count for this txid
-            downloaded_match = re.search(downloaded_pattern, additional_data)
-            if downloaded_match:
-                supernode_ip = downloaded_match.group(1)
-                if data['txid'] not in downloaded_supernodes:
-                    downloaded_supernodes[data['txid']] = set()
-                downloaded_supernodes[data['txid']].add(supernode_ip)
-            additional_data = additional_data.strip().split(' ')
-            for item in additional_data:
-                if '=' in item:
-                    key, value = item.split('=')
-                    if key not in excluded_keys:  # only add to the data dict if key is not in the excluded_keys set
-                        data[key] = value
-            parsed_data.append(data)
-    for data in parsed_data:  # add the list of downloaded supernodes and the count to each log line
-        if 'txid' in data:
-            data['list_of_sn_ip_addresses_that_provided_file_chunks'] = list(downloaded_supernodes.get(data['txid'], set()))
-            data['number_of_downloaded_parts'] = len(downloaded_supernodes.get(data['txid'], set()))
-    return pd.DataFrame(parsed_data)            
-            
-
-def update_cascade_status_func(df):
-    log_data = get_walletnode_log_data_func()
-    parsed_df = parse_walletnode_log_data_func(log_data)
-    txid_log_dict = {}
-    if not parsed_df.empty:
-        for idx, row in parsed_df.iterrows():
-            txid = row['txid']
-            if txid in txid_log_dict:
-                txid_log_dict[txid].append({'index': idx, 'datetime': row['log_datetime'], 'message': row['last_log_status']})
+def print_dict_structure(d, indent=0):
+    for key, value in d.items():
+        print('\t' * indent + str(key))
+        if isinstance(value, dict):
+            print_dict_structure(value, indent+1)
+        elif isinstance(value, list):
+            if value:  # check if list is not empty
+                if isinstance(value[0], dict):
+                    print('\t' * (indent+1) + str(type(value[0])))
+                    print_dict_structure(value[0], indent+2)
+                else:
+                    print('\t' * (indent+1) + str(type(value[0])))
             else:
-                txid_log_dict[txid] = [{'index': idx, 'datetime': row['log_datetime'], 'message': row['last_log_status']}]
-            if 'txid' in df.columns and txid in df['txid'].values:
-                df.loc[df['txid'] == txid, 'last_log_status'] = row['last_log_status']
-                if row['last_log_status'] == 'Start downloading':
-                    df.loc[df['txid'] == txid, 'datetime_started'] = row['log_datetime'] if pd.notnull(row['log_datetime']) else 'NA'
-                elif row['last_log_status'] == 'Finished downloading':
-                    df.loc[df['txid'] == txid, 'datetime_finished'] = row['log_datetime'] if pd.notnull(row['log_datetime']) else 'NA'
-            else:
-                new_row = row.to_dict()
-                new_row.pop('log_datetime', None) # Remove as these fields are not in the original df
-                df = df.append(new_row, ignore_index=True)
-    return df, txid_log_dict
+                print('\t' * (indent+1) + 'list is empty')
+        else:
+            print('\t' * (indent+1) + str(type(value)))
 
 
-async def update_cascade_status_periodically_func(df):
-    txid_log_dict = {}
-    try:
-        while True:
-            df, new_txid_log_dict = update_cascade_status_func(df)
-            txid_log_dict.update(new_txid_log_dict) # Update the txid_log_dict with new logs
-            await asyncio.sleep(1)
-    except asyncio.exceptions.CancelledError:
-        log.info('The status update task was cancelled.')
-    return df, txid_log_dict
+async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
+    def convert(item):
+        if isinstance(item, (pd.Timestamp, pd._libs.tslibs.timestamps.Timestamp, datetime.datetime)):
+            return item.isoformat()
+        elif item == "NA":
+            return None # Convert "NA" strings into None
+        elif isinstance(item, pd._libs.tslibs.nattype.NaTType) or item is None:
+            return "None" # or you can return some other value that signifies None in your use case
+        elif isinstance(item, (np.int64, np.int32, np.float64, np.float32, int, float)):
+            return item.item() if hasattr(item, 'item') else item
+        elif isinstance(item, dict):
+            return {k: convert(v) for k, v in item.items()}
+        elif isinstance(item, list):
+            return [convert(elem) for elem in item]
+        else:
+            return str(item)
+    converted_dict = {k: convert(v) for k, v in combined_output_dict.items()}
+    return converted_dict
 
 
 async def get_random_cascade_txids_func(n: int) -> List[str]:
@@ -1102,60 +1043,130 @@ async def download_cascade_file_test_func(txid: str) -> dict:
         log.info(f'Successfully finished test download for txid {txid}.')
         return {
             'txid': txid,
-            'test_datetime_started': start_time,
-            'test_datetime_finished': end_time,
-            'file_size_in_megabytes': file_size_in_megabytes,
+            'datetime_started': start_time,
+            'datetime_finished': end_time,
+            'file_size_in_megabytes': round(file_size_in_megabytes, 3),
             'file_name': file_name,
-            'download_time': float((end_time - start_time).total_seconds()),
-            'download_speed_in_mb_per_second': download_speed_in_mb_per_second
+            'download_time': round(float((end_time - start_time).total_seconds()),3),
+            'download_speed_in_mb_per_second': round(download_speed_in_mb_per_second,3)
         }
     except Exception as e:
         log.error(f"Exception occurred in download_cascade_file_test_func for txid {txid}: {e}")
-
-
-def print_dict_structure(d, indent=0):
-    for key, value in d.items():
-        print('\t' * indent + str(key))
-        if isinstance(value, dict):
-            print_dict_structure(value, indent+1)
-        elif isinstance(value, list):
-            if value:  # check if list is not empty
-                if isinstance(value[0], dict):
-                    print('\t' * (indent+1) + str(type(value[0])))
-                    print_dict_structure(value[0], indent+2)
-                else:
-                    print('\t' * (indent+1) + str(type(value[0])))
-            else:
-                print('\t' * (indent+1) + 'list is empty')
-        else:
-            print('\t' * (indent+1) + str(type(value)))
-
-
-async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
-    def convert(item):
-        if isinstance(item, (pd.Timestamp, pd._libs.tslibs.timestamps.Timestamp, datetime.datetime)):
-            return item.isoformat()
-        elif item == "NA":
-            return None # Convert "NA" strings into None
-        elif isinstance(item, pd._libs.tslibs.nattype.NaTType) or item is None:
-            return "None" # or you can return some other value that signifies None in your use case
-        elif isinstance(item, (np.int64, np.int32, np.float64, np.float32, int, float)):
-            return item.item() if hasattr(item, 'item') else item
-        elif isinstance(item, dict):
-            return {k: convert(v) for k, v in item.items()}
-        elif isinstance(item, list):
-            return [convert(elem) for elem in item]
-        else:
-            return str(item)
-    converted_dict = {k: convert(v) for k, v in combined_output_dict.items()}
-    return converted_dict
-
-
-async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading, status_df):
+        
+        
+def get_walletnode_log_data_func():
+    log_file_path = '/home/ubuntu/.pastel/walletnode.log'
+    command = f'tail -n 500 {log_file_path}'
     try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, shell=True)
+        output, _ = process.communicate()
+        log_data = output.decode('utf-8')
+        return log_data
+    except Exception as e:
+        log.error(f'An error occurred while trying to get data from the wallet node log file! Error message: {e}')
+        return None
+    
+    
+def parse_walletnode_log_data_func(log_data):
+    if log_data is None:
+        log.error('Cannot parse wallet node log data, as it is None!')
+        return []
+    log_pattern = r'\[(.*?)\]\s+INFO\s+(.*?):\s+(.*?)\sserver_ip=(.*?)\s(.*?)$'
+    txid_pattern = r'txid=(\w+)'
+    downloaded_pattern = r'Downloaded from supernode address=(.*?)\s'
+    parsed_data = []
+    log_indices = {}
+    downloaded_parts = {}
+    supernode_addresses = {}  # Stores addresses for each txid
+    current_index = {}  # Stores the current index for each txid
+    current_year = datetime.datetime.now().year
+    for line in log_data.split('\n'):
+        match = re.match(log_pattern, line)
+        if match:
+            datetime_str = match.group(1) + f" {current_year}"
+            log_datetime = pd.to_datetime(datetime_str, format='%b %d %H:%M:%S.%f %Y', errors='coerce')
+            additional_data = match.group(5)
+            txid_match = re.search(txid_pattern, additional_data)
+            if txid_match:
+                txid = txid_match.group(1)
+                if txid not in current_index:
+                    current_index[txid] = 1
+                else:
+                    current_index[txid] += 1
+                data = {
+                    'index': current_index[txid],
+                    'timestamp': log_datetime,
+                    'message': match.group(3),
+                    'txid': txid,
+                }
+                if 'Downloaded from supernode' in line:
+                    supernode_match = re.search(downloaded_pattern, line)
+                    if supernode_match:
+                        supernode_address = supernode_match.group(1)
+                        if txid in supernode_addresses:
+                            supernode_addresses[txid].add(supernode_address)
+                        else:
+                            supernode_addresses[txid] = {supernode_address}
+                parsed_data.append(data)
+    parsed_data_df = pd.DataFrame(parsed_data)
+    for data in parsed_data_df.itertuples():
+        txid = getattr(data, 'txid')
+        if txid:
+            parsed_data_df.loc[data.Index, 'list_of_supernode_ip_addresses_that_provided_file_chunks'] = ', '.join(supernode_addresses.get(txid, []))
+    return parsed_data_df
+
+
+def update_cascade_status_func(df: pd.DataFrame):
+    log_data = get_walletnode_log_data_func()
+    parsed_log_data = parse_walletnode_log_data_func(log_data)
+    txid_log_dict = {}
+    for idx, row in parsed_log_data.iterrows():
+        txid = row['txid']
+        log_line = {
+            'index': row['index'], 
+            'datetime': row['timestamp'], 
+            'message': row['message'], 
+            'list_of_supernode_ip_addresses_that_provided_file_chunks': row['list_of_supernode_ip_addresses_that_provided_file_chunks']
+        }
+        if txid in txid_log_dict:
+            txid_log_dict[txid]['log_lines'].append(log_line)
+        else:
+            txid_log_dict[txid] = {
+                'last_log_status': row['message'], 
+                'log_lines': [log_line]
+            }
+        if 'txid' in df.columns and txid in df['txid'].values:
+            df.loc[df['txid'] == txid, 'last_log_status'] = row['message']
+            if row['message'] == 'Start downloading':
+                df.loc[df['txid'] == txid, 'datetime_started'] = row['timestamp'] if pd.notnull(row['timestamp']) else 'NA'
+            elif row['message'] == 'Finished downloading':
+                df.loc[df['txid'] == txid, 'datetime_finished'] = row['timestamp'] if pd.notnull(row['timestamp']) else 'NA'
+        else:
+            new_row = row.to_dict()
+            new_row.pop('timestamp', None)  # Remove 'timestamp' as these fields are not in the original df
+            df = df.append(new_row, ignore_index=True)
+    return df, txid_log_dict
+
+
+async def update_cascade_status_periodically_func(df: pd.DataFrame):
+    txid_log_dict = {}
+    try:
+        while True:
+            df, new_txid_log_dict = update_cascade_status_func(df)
+            txid_log_dict.update(new_txid_log_dict)  # Update the txid_log_dict with new logs
+            await asyncio.sleep(1)
+    except asyncio.exceptions.CancelledError:
+        log.info('The status update task was cancelled.')
+    return df, txid_log_dict
+
+
+async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading):
+    try:
+        df = pd.DataFrame()  # Initialize dataframe here
         txid_log_dict = {}
+        update_task = asyncio.create_task(update_cascade_status_periodically_func(df))
         try:
-            update_task = asyncio.create_task(update_cascade_status_periodically_func(status_df))
+            update_task = asyncio.create_task(update_cascade_status_periodically_func(df))            
         except Exception as e:
             log.error(f'Exception occurred while starting update task: {e}')
         await asyncio.sleep(2)
@@ -1168,6 +1179,8 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
             finished, unfinished = await asyncio.wait(download_tasks, timeout=seconds_to_wait_for_all_files_to_finish_downloading)
             max_cancel_attempts = 3  # Set maximum cancel attempts
             cancel_timeout = 5  # Set cancel timeout
+            status_df = pd.DataFrame()
+            txid_log_dict = {}            
             if update_task in finished:
                 status_df, txid_log_dict = update_task.result()
             else:
@@ -1178,7 +1191,6 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
                     except asyncio.exceptions.TimeoutError:
                         log.warning(f'Update task did not finish within the expected time. Attempt {attempt + 1} of {max_cancel_attempts}.')
                         continue
-
                     if update_task.done():
                         try:
                             status_df, txid_log_dict = update_task.result()
@@ -1197,26 +1209,32 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
         download_df = pd.DataFrame(download_data)
         download_df['log_lines'] = download_df['txid'].map(txid_log_dict) 
         download_df['txid'] = download_df['txid'].astype(str)  # Ensure the 'txid' column has the same data type in both dataframes
-        df = pd.merge(download_df, status_df, how='left', on='txid')
-        df['time_diff'] = (df['datetime_finished'] - df['datetime_started']).dt.total_seconds()
+        # check that pd.merge(download_df, status_df, how='left', on='txid') will work:
+        print('Columns in download_df:', download_df.columns)
+        print('Columns in status_df:', status_df.columns)
+        if 'txid' in status_df.columns and download_df['txid'].isin(status_df['txid']).sum() != download_df.shape[0]:
+            df = pd.merge(download_df, status_df, how='left', on='txid')
+        else:
+            df = download_df
+        df['time_elapsed'] = (df['datetime_finished'] - df['datetime_started']).dt.total_seconds()
         return df, txid_log_dict
     except Exception as e:
         log.error(f'Error occurred while performing download tasks: {e}', exc_info=True)
 
 
 def create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading, number_of_concurrent_downloads):
-    finished_before_timeout = df[df['time_diff'] < seconds_to_wait_for_all_files_to_finish_downloading].shape[0]
-    finished_within_one_min = df[df['time_diff'] < 60].shape[0]
+    finished_before_timeout = df[df['time_elapsed'] < seconds_to_wait_for_all_files_to_finish_downloading].shape[0]
+    finished_within_one_min = df[df['time_elapsed'] < 60].shape[0]
     summary_df = pd.DataFrame({
         'total_number_of_files_tested': number_of_concurrent_downloads,
         'number_of_files_downloaded': [len(df)],
         'finished_before_timeout': [finished_before_timeout],
-        'percentage_finished_before_timeout': [finished_before_timeout / number_of_concurrent_downloads * 100],
+        'percentage_finished_before_timeout': [round(finished_before_timeout / number_of_concurrent_downloads * 100, 3)],
         'finished_within_one_min': [finished_within_one_min],
-        'percentage_finished_within_one_minute': [finished_within_one_min / number_of_concurrent_downloads * 100],
-        'average_file_size_in_megabytes': [df['file_size_in_megabytes'].mean()],
-        'max_file_size_in_megabytes': [df['file_size_in_megabytes'].max()],
-        'median_download_speed_in_mb_per_second': [df['download_speed_in_mb_per_second'].median()],
+        'percentage_finished_within_one_minute': [round(finished_within_one_min / number_of_concurrent_downloads * 100, 3)],
+        'average_file_size_in_megabytes': [df['file_size_in_megabytes'].mean().round(3)],
+        'max_file_size_in_megabytes': [df['file_size_in_megabytes'].max().round(3)],
+        'median_download_speed_in_mb_per_second': [df['download_speed_in_mb_per_second'].median().round(3)],
     })
     return summary_df
 
@@ -1229,7 +1247,7 @@ async def bulk_test_cascade_func(n: int):
         txids = await get_random_cascade_txids_func(n)
         log.info(f'Got {len(txids)} txids for testing.')
         seconds_to_wait_for_all_files_to_finish_downloading = 500
-        df, txid_log_dict = await perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading, status_df)
+        df, txid_log_dict = await perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading)        
         summary_df = create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading, n)
         log.info('Processing test results...')
         df_dict = df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
@@ -1262,7 +1280,7 @@ async def get_parsed_dd_service_results_by_image_file_hash_func(image_file_hash:
         return list_of_results
     else: 
         error_string = 'Cannot find a Sense or NFT registration ticket with that image file hash-- it might still be processing or it might not exist!'
-        print(error_string)
+        log.error(error_string)
         return error_string
 
 
@@ -1276,7 +1294,7 @@ async def get_raw_dd_service_results_by_image_file_hash_func(image_file_hash: st
         return list_of_results
     else:
         error_string = 'Cannot find a Sense or NFT registration ticket with that image file hash-- it might still be processing or it might not exist!'
-        print(error_string)
+        log.error(error_string)
         return error_string
     
 
@@ -1290,7 +1308,7 @@ async def get_parsed_dd_service_results_by_pastel_id_of_submitter_func(pastel_id
         return list_of_results
     else: 
         error_string = 'Cannot find any Sense or NFT registration tickets for that PastelID-- they might still be processing or they might not exist!'
-        print(error_string)
+        log.error(error_string)
         return error_string
 
 
@@ -1304,7 +1322,7 @@ async def get_raw_dd_service_results_by_pastel_id_of_submitter_func(pastel_id_of
         return list_of_results
     else:
         error_string = 'Cannot find any Sense or NFT registration tickets for that PastelID-- they might still be processing or they might not exist!'
-        print(error_string)
+        log.error(error_string)
         return error_string
     
 
@@ -1318,7 +1336,7 @@ async def get_parsed_dd_service_results_by_pastel_block_hash_when_request_submit
         return list_of_results
     else: 
         error_string = 'Cannot find any Sense or NFT registration tickets for that block hash when submitted-- they might still be processing or they might not exist!'
-        print(error_string)
+        log.error(error_string)
         return error_string
 
 
@@ -1332,7 +1350,7 @@ async def get_raw_dd_service_results_by_pastel_block_hash_when_request_submitted
         return list_of_results
     else:
         error_string = 'Cannot find any Sense or NFT registration tickets for that block hash when submitted-- they might still be processing or they might not exist!'
-        print(error_string)
+        log.error(error_string)
         return error_string
 
 
@@ -1346,7 +1364,7 @@ async def get_parsed_dd_service_results_by_pastel_block_height_when_request_subm
         return list_of_results
     else:
         error_string = 'Cannot find any Sense or NFT registration tickets for that block height when submitted -- they might still be processing or they might not exist!'
-        print(error_string)
+        log.error(error_string)
         return error_string
 
 
@@ -1360,7 +1378,7 @@ async def get_raw_dd_service_results_by_pastel_block_height_when_request_submitt
         return list_of_results
     else: 
         error_string = 'Cannot find any Sense or NFT registration tickets for that block height when submitted -- they might still be processing or they might not exist!'
-        print(error_string)
+        log.error(error_string)
         return error_string
         
 
@@ -1393,7 +1411,7 @@ async def get_all_registration_ticket_txids_corresponding_to_a_collection_ticket
         item_type = ''
     else:
         error_string = 'The ticket type is neither collection-reg nor collection-act'
-        print(error_string)
+        log.error(error_string)
         return error_string
     activation_ticket_txid = activation_ticket_data['txid']
     if item_type == 'sense':
@@ -1617,7 +1635,7 @@ class MyTimer():
         end = time.time()
         runtime = end - self.start
         msg = '({time} seconds to complete)'
-        print(msg.format(time=round(runtime, 2)))
+        log.info(msg.format(time=round(runtime, 2)))
 
 
 def compute_elapsed_time_in_minutes_between_two_datetimes_func(start_datetime, end_datetime):
@@ -1645,7 +1663,7 @@ def check_if_ip_address_is_valid_func(ip_address_string):
         _ = ipaddress.ip_address(ip_address_string)
         ip_address_is_valid = 1
     except Exception as e:
-        print('Validation Error: ' + str(e))
+        log.error('Validation Error: ' + str(e))
         ip_address_is_valid = 0
     return ip_address_is_valid
 
@@ -1661,12 +1679,12 @@ def check_if_pasteld_is_running_correctly_and_relaunch_if_required_func():
     try:
         current_pastel_block_number = get_current_pastel_block_height_func()
     except:
-        print('Problem running pastel-cli command!')
+        log.error('Problem running pastel-cli command!')
         current_pastel_block_number = ''
     if isinstance(current_pastel_block_number, int):
         if current_pastel_block_number > 100000:
             pasteld_running_correctly = 1
-            print('Pasteld is running correctly!')
+            log.info('Pasteld is running correctly!')
     if pasteld_running_correctly == 0:
         process_output = os.system("cd /home/pastelup/ && tmux new -d ./pastelup start walletnode --development-mode")
     return pasteld_running_correctly
@@ -1682,26 +1700,26 @@ def install_pasteld_func(network_name='testnet'):
                         sed -i -e 's/rpcpassword=.*/rpcpassword=rpc_pwd/' ~/.pastel/pastel.conf"
     #check if pastelup is already installed:
     if os.path.exists('~/pastelup/pastelup'):
-        print('Pastelup is already installed!')
-        print('Running pastelup install command...')
+        log.info('Pastelup is already installed!')
+        log.info('Running pastelup install command...')
         try:
             command_result = os.system(command_string)
             if not command_result:
-                print('Pastelup install command appears to have run successfully!')
+                log.info('Pastelup install command appears to have run successfully!')
         except:
-            print('Error running pastelup install command! Message: ' + str(command_result))
+            log.error('Error running pastelup install command! Message: ' + str(command_result))
     else:
-        print('Pastelup is not installed, trying to install it...')
+        log.info('Pastelup is not installed, trying to install it...')
         try:
             install_result = os.system(install_pastelup_script_command_string)
             if not install_result:
-                print('Pastelup installed successfully!')
-                print('Running pastelup install command...')
+                log.info('Pastelup installed successfully!')
+                log.info('Running pastelup install command...')
                 command_result = os.system(command_string)
             else:
-                print('Pastelup installation failed! Message: ' + str(install_result))
+                log.info('Pastelup installation failed! Message: ' + str(install_result))
         except:
-            print('Error running pastelup install command! Message: ' + str(install_result))
+            log.error('Error running pastelup install command! Message: ' + str(install_result))
     return
             
 #_______________________________________________________________________________________________________________________________
