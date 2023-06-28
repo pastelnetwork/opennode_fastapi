@@ -524,12 +524,11 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
             request_url = f'http://localhost:8080/nfts/get_dd_result_file?pid={requester_pastelid}&txid={txid}'
         else:
             raise ValueError(f'Invalid ticket type for txid {txid}! Ticket type must be either "sense" or "nft"!')
-        
         headers = {'Authorization': 'testpw123'}
         async with httpx.AsyncClient() as client:
-            log.info(f'[Timestamp: {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}] Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}...') 
+            log.info(f'Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}...') 
             response = await client.get(request_url, headers=headers, timeout=500.0)    
-            log.info(f'[Timestamp: {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}] Finished downloading Raw DD-Service results for ticket type {ticket_type} and txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
+            log.info(f'Finished downloading Raw DD-Service results for ticket type {ticket_type} and txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
         parsed_response = response.json()
         if parsed_response['file'] is None:
             raise ValueError(f'No file was returned from the {ticket_type} API for txid {txid}!')
@@ -801,7 +800,7 @@ async def startup_cascade_file_download_lock_cleanup_func(background_tasks: Back
         for lock in stale_locks:
             session.delete(lock)
         await session.commit()
-        log.info(f"Deleted {len(stale_locks)} stale cascade file download locks locks")
+        log.info(f"Deleted {len(stale_locks)} stale cascade file download locks")
             
     
 async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str):
@@ -871,7 +870,7 @@ async def get_cascade_original_file_metadata_func(txid: str):
         original_file_sha3_256_hash = base64.b64decode(base64_encoded_original_file_sha3_256_hash).hex()
         original_file_size_in_bytes = api_ticket['original_file_size_in_bytes']
         original_file_mime_type = api_ticket['file_type']
-        log.info(f'Got original file name from the Cascade blockchain ticket: {original_file_name_string}: it is a {publicly_accessible_description_string} "{original_file_mime_type}" file of size {round(original_file_size_in_bytes/1024/1024,2)}mb and SHA3-256 hash "{original_file_sha3_256_hash}"')
+        log.info(f'Got original file name from the Cascade blockchain ticket with registration txid {txid}; Filename: {original_file_name_string}, a {publicly_accessible_description_string} "{original_file_mime_type}" file of size {round(original_file_size_in_bytes/1024/1024, 3)}mb and SHA3-256 hash "{original_file_sha3_256_hash}"')
         return original_file_name_string, is_publicly_accessible, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type
     except Exception as e:
         log.warning('Unable to get original file name from the Cascade blockchain ticket! Using txid instead as the default file name...')
@@ -1188,6 +1187,7 @@ async def update_cascade_status_periodically_func(df: pd.DataFrame):
     return df, txid_log_dict, supernode_ips_dict
 
 
+
 async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading):
     try:
         df = pd.DataFrame()  # Initialize dataframe here
@@ -1237,11 +1237,15 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
         log.info('All download tasks finished.')
         download_data = [t.result() for t in finished if t.result() is not None and 'txid' in t.result()]
         download_df = pd.DataFrame(download_data)
-        download_df['log_lines'] = download_df['txid'].map(txid_log_dict) 
-        download_df['supernode_ips'] = download_df['txid'].apply(lambda x: ", ".join(supernode_ips_dict.get(x, [])))
-        download_df['txid'] = download_df['txid'].astype(str)  # Ensure the 'txid' column has the same data type in both dataframes
-        if 'txid' in status_df.columns and download_df['txid'].isin(status_df['txid']).sum() != download_df.shape[0]:
-            df = pd.merge(download_df, status_df, how='left', on='txid')
+        if 'txid' in download_df.columns:
+            download_df['log_lines'] = download_df['txid'].map(txid_log_dict)
+            download_df['supernode_ips'] = download_df['txid'].apply(lambda x: ", ".join(supernode_ips_dict.get(x, [])))
+            download_df['txid'] = download_df['txid'].astype(str)      
+            if 'txid' in status_df.columns: 
+                if download_df['txid'].isin(status_df['txid']).sum() != download_df.shape[0]:
+                    df = pd.merge(download_df, status_df, how='left', on='txid')
+                else:
+                    df = download_df                
         else:
             df = download_df
         if 'datetime_finished' in df.columns and 'datetime_started' in df.columns:
@@ -1251,12 +1255,24 @@ async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_f
         return df, txid_log_dict, supernode_ips_dict
     except Exception as e:
         log.error(f'Error occurred while performing download tasks: {e}', exc_info=True)
-
+        return None, None, None
+    
 
 def create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading, number_of_concurrent_downloads):
     finished_before_timeout = df[df['time_elapsed'] < seconds_to_wait_for_all_files_to_finish_downloading].shape[0]
     finished_within_one_min = df[df['time_elapsed'] < 60].shape[0]
-    all_supernode_ips = [ip.strip() for sublist in df['supernode_ips'].str.split(',').tolist() for ip in sublist if ip != '']
+    if 'supernode_ips' in df.columns:
+        all_supernode_ips = [ip.strip() for sublist in df['supernode_ips'].str.split(',').tolist() for ip in sublist if ip != '']
+    else:
+        all_supernode_ips = []
+    if 'file_size_in_megabytes' in df.columns:
+        file_size_in_mb = df['file_size_in_megabytes']
+    else:
+        file_size_in_mb = np.nan    
+    if 'download_speed_in_mb_per_second' in df.columns:
+        download_speed_in_mb_per_second = df['download_speed_in_mb_per_second']
+    else:
+        download_speed_in_mb_per_second = np.nan                
     supernode_ip_counts = dict(Counter(all_supernode_ips))
     total_counts = sum(supernode_ip_counts.values())
     supernode_ip_percentages = {ip: round((count/total_counts)*100, 2) for ip, count in supernode_ip_counts.items()}
@@ -1267,9 +1283,9 @@ def create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_file
         'percentage_finished_before_timeout': [round(finished_before_timeout / number_of_concurrent_downloads * 100, 3)],
         'finished_within_one_min': [finished_within_one_min],
         'percentage_finished_within_one_minute': [round(finished_within_one_min / number_of_concurrent_downloads * 100, 3)],
-        'average_file_size_in_megabytes': [df['file_size_in_megabytes'].mean().round(3)],
-        'max_file_size_in_megabytes': [df['file_size_in_megabytes'].max().round(3)],
-        'median_download_speed_in_mb_per_second': [df['download_speed_in_mb_per_second'].median().round(3)],
+        'average_file_size_in_megabytes': [file_size_in_mb.mean().round(3)],
+        'max_file_size_in_megabytes': [file_size_in_mb.max().round(3)],
+        'median_download_speed_in_mb_per_second': [download_speed_in_mb_per_second.median().round(3)],
         'supernode_ip_counts': [supernode_ip_counts],
         'supernode_ip_percentages': [supernode_ip_percentages],
     })
