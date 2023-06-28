@@ -1266,13 +1266,15 @@ def create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_file
     else:
         all_supernode_ips = []
     if 'file_size_in_megabytes' in df.columns:
-        file_size_in_mb = df['file_size_in_megabytes']
+        average_file_size_in_megabytes = df['file_size_in_megabytes'].mean().round(3)
+        max_file_size_in_megabytes = df['file_size_in_megabytes'].max().round(3)
     else:
-        file_size_in_mb = np.nan    
+        average_file_size_in_megabytes = np.nan    
+        max_file_size_in_megabytes = np.nan
     if 'download_speed_in_mb_per_second' in df.columns:
-        download_speed_in_mb_per_second = df['download_speed_in_mb_per_second']
+        median_download_speed_in_mb_per_second = df['download_speed_in_mb_per_second'].median().round(3)
     else:
-        download_speed_in_mb_per_second = np.nan                
+        median_download_speed_in_mb_per_second = np.nan                
     supernode_ip_counts = dict(Counter(all_supernode_ips))
     total_counts = sum(supernode_ip_counts.values())
     supernode_ip_percentages = {ip: round((count/total_counts)*100, 2) for ip, count in supernode_ip_counts.items()}
@@ -1283,9 +1285,9 @@ def create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_file
         'percentage_finished_before_timeout': [round(finished_before_timeout / number_of_concurrent_downloads * 100, 3)],
         'finished_within_one_min': [finished_within_one_min],
         'percentage_finished_within_one_minute': [round(finished_within_one_min / number_of_concurrent_downloads * 100, 3)],
-        'average_file_size_in_megabytes': [file_size_in_mb.mean().round(3)],
-        'max_file_size_in_megabytes': [file_size_in_mb.max().round(3)],
-        'median_download_speed_in_mb_per_second': [download_speed_in_mb_per_second.median().round(3)],
+        'average_file_size_in_megabytes': [average_file_size_in_megabytes],
+        'max_file_size_in_megabytes': [max_file_size_in_megabytes],
+        'median_download_speed_in_mb_per_second': [median_download_speed_in_mb_per_second],
         'supernode_ip_counts': [supernode_ip_counts],
         'supernode_ip_percentages': [supernode_ip_percentages],
     })
