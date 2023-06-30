@@ -5,6 +5,7 @@ from data.modelbase import SqlAlchemyBase
 from sqlalchemy import Column, String, BigInteger, ForeignKey, DECIMAL, DateTime
 from sqlalchemy.orm import relationship
 import datetime
+from pydantic import BaseModel
 
 class OpenNodeFastAPIRequests(SqlAlchemyBase):
     __tablename__ = 'opennode_fastapi_requests'
@@ -133,7 +134,8 @@ class PastelTransactionOutputData(SqlAlchemyBase):
     
 class CascadeCacheFileLocks(SqlAlchemyBase):
     __tablename__ = 'cascade_cache_file_locks'
-    txid = Column(String(64), primary_key=True)    
+    txid = Column(String(64), primary_key=True)
+    lock_created_at = Column(DateTime, default=datetime.datetime.utcnow)  # lock creation timestamp
     
 class BadTXID(SqlAlchemyBase):
     __tablename__ = 'bad_txids'
@@ -144,3 +146,10 @@ class BadTXID(SqlAlchemyBase):
     datetime_txid_marked_as_bad = sa.Column(sa.DateTime, default=datetime.datetime.now, index=True)
     failed_attempts = sa.Column(sa.Integer, default=0)
     next_attempt_time = sa.Column(sa.DateTime, default=datetime.datetime.now)
+
+class ShowLogsIncrementalModel(BaseModel):
+    logs: str
+    last_position: int
+    
+class LogLines(BaseModel):
+    last_lines: str
