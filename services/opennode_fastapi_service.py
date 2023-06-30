@@ -39,6 +39,7 @@ import numpy as np
 import pandas as pd
 from pandas._libs.tslibs.timestamps import Timestamp
 import httpx
+from httpx import AsyncClient, Timeout, Limits
 import dirtyjson
 from pathlib import Path
 
@@ -56,7 +57,6 @@ from email import encoders
 import http.client as httplib
 import base64
 import decimal
-import urllib.parse as urlparse
 import statistics
 from fastapi import BackgroundTasks, Depends
 
@@ -205,13 +205,13 @@ def EncodeDecimal(o):
     raise TypeError(repr(o) + " is not JSON serializable")
     
 
-
 class AsyncAuthServiceProxy:
-    def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2):
+    _semaphore = asyncio.BoundedSemaphore(10) # Limit to 10 concurrent requests
+    def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2, request_timeout=60):
         self.service_url = service_url
         self.service_name = service_name
-        self.url = urlparse.urlparse(service_url)
-        self.client = AsyncClient()
+        self.url = urlparse.urlparse(service_url)        
+        self.client = AsyncClient(timeout=Timeout(request_timeout), limits=Limits(max_connections=20, max_keepalive_connections=10))
         self.id_count = 0
         user = self.url.username
         password = self.url.password
@@ -219,6 +219,7 @@ class AsyncAuthServiceProxy:
         self.auth_header = b'Basic ' + base64.b64encode(authpair)
         self.reconnect_timeout = reconnect_timeout
         self.reconnect_amount = reconnect_amount
+        self.request_timeout = request_timeout
 
     def __getattr__(self, name):
         if name.startswith('__') and name.endswith('__'):
@@ -228,47 +229,47 @@ class AsyncAuthServiceProxy:
         return AsyncAuthServiceProxy(self.service_url, name)
 
     async def __call__(self, *args):
-        self.id_count += 1
-        postdata = json.dumps({
-            'version': '1.1',
-            'method': self.service_name,
-            'params': args,
-            'id': self.id_count
-        }, default=EncodeDecimal)
-        headers = {
-            'Host': self.url.hostname,
-            'User-Agent': "AuthServiceProxy/0.1",
-            'Authorization': self.auth_header,
-            'Content-type': 'application/json'
-        }
-        
-        for i in range(self.reconnect_amount):
-            try:
-                if i > 0:
-                    log.warning(f"Reconnect try #{i+1}")
-                response = await self.client.post(
-                    self.service_url, headers=headers, data=postdata)
-                break
-            except Exception as e:
-                err_msg = f"Failed to connect to {self.url.hostname}:{self.url.port}"
-                rtm = self.reconnect_timeout
-                if rtm:
-                    err_msg += f". Waiting {rtm} seconds."
-                log.exception(err_msg)
-                if rtm:
-                    await asyncio.sleep(rtm)
-        else:
-            log.error("Reconnect tries exceeded.")
-            return
-
-        response_json = response.json()
-        if response_json['error'] is not None:
-            raise JSONRPCException(response_json['error'])
-        elif 'result' not in response_json:
-            raise JSONRPCException({
-                'code': -343, 'message': 'missing JSON-RPC result'})
-        else:
-            return response_json['result']
+        async with self._semaphore: # Acquire a semaphore
+            self.id_count += 1
+            postdata = json.dumps({
+                'version': '1.1',
+                'method': self.service_name,
+                'params': args,
+                'id': self.id_count
+            }, default=EncodeDecimal)
+            headers = {
+                'Host': self.url.hostname,
+                'User-Agent': "AuthServiceProxy/0.1",
+                'Authorization': self.auth_header,
+                'Content-type': 'application/json'
+            }
+            for i in range(self.reconnect_amount):
+                try:
+                    if i > 0:
+                        log.warning(f"Reconnect try #{i+1}")
+                        sleep_time = self.reconnect_timeout * (2 ** i)
+                        log.info(f"Waiting for {sleep_time} seconds before retrying.")
+                        await asyncio.sleep(sleep_time)
+                    response = await self.client.post(
+                        self.service_url, headers=headers, data=postdata)
+                    break
+                except Exception as e:
+                    err_msg = f"Failed to connect to {self.url.hostname}:{self.url.port}"
+                    rtm = self.reconnect_timeout
+                    if rtm:
+                        err_msg += f". Waiting {rtm} seconds."
+                    log.exception(err_msg)
+            else:
+                log.error("Reconnect tries exceeded.")
+                return
+            response_json = response.json()
+            if response_json['error'] is not None:
+                raise JSONRPCException(response_json['error'])
+            elif 'result' not in response_json:
+                raise JSONRPCException({
+                    'code': -343, 'message': 'missing JSON-RPC result'})
+            else:
+                return response_json['result']
        
         
 def get_current_pastel_block_height_func():
@@ -956,13 +957,14 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
                 log.error(f'An error occurred while downloading the file for txid {txid}. Error: {e}')
             try:
                 verification_result = await verify_downloaded_cascade_file_func(decoded_response, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type)
+                log.info(f'Finished download process for txid {txid} in {time.time() - start_time} seconds.')
+                return decoded_response, original_file_name_string                
                 if verification_result is not True:
                     log.error(f'File verification failed for txid {txid}. Error: {verification_result}')
                     return verification_result, ""
             except Exception as e:
                 log.error(f'An error occurred while verifying the file for txid {txid}. Error: {e}')
-        log.info(f'Finished download process for txid {txid} in {time.time() - start_time} seconds.')
-        return decoded_response, original_file_name_string
+        return f"An error occurred while downloading the file for txid {txid}.", ""
     except Exception as e:
         log.error(f'An unexpected error occurred during download process for txid {txid}. Error: {e}')
         raise
