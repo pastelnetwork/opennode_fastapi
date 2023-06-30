@@ -802,7 +802,14 @@ async def startup_cascade_file_download_lock_cleanup_func(background_tasks: Back
         await session.commit()
         log.info(f"Deleted {len(stale_locks)} stale cascade file download locks")
             
-    
+            
+async def delete_cascade_file_lock_func(txid: str):
+    lock_exists = await session.get(CascadeCacheFileLocks, txid)
+    if lock_exists:
+        await session.delete(lock_exists)
+        await session.commit()
+            
+            
 async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str):
     lock_expiration_time = timedelta(minutes=10)  # Define cascade file download lock expiration time to be 10 minutes (this is so that we don't try to download the same file from multiple workers at the same time)
     lock_exists = await session.get(CascadeCacheFileLocks, txid)
@@ -811,7 +818,7 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
         lock_age = current_time - lock_exists.lock_created_at
         if lock_age < lock_expiration_time:
             log.warning(f"Download of file {txid} is already in progress, skipping...")
-            return None, None  # return tuple of None
+            return None, None
         else: # Lock is considered stale, delete it
             await session.delete(lock_exists)
             await session.commit()
@@ -825,26 +832,30 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
             async with client.stream('GET', request_url, headers=headers, timeout=500.0) as response:
                 body = await response.aread()  # async read
                 parsed_response = json.loads(body.decode())  # parse JSON
-        file_identifier = parsed_response['file_id']
-        file_download_url = f"http://localhost:8080/files/{file_identifier}"
-        async with httpx.AsyncClient() as client:
-            async with client.stream('GET', file_download_url, headers=headers, timeout=500.0) as response:
-                decoded_response = await response.aread()  # async read
-        cache_file_path = os.path.join(cache_dir, txid)
-        async with aiofiles.open(cache_file_path, mode='wb') as f:
-            await f.write(decoded_response)
+        if 'name' in parsed_response.keys():
+            if parsed_response.get('name') == 'InternalServerError':
+                error_message = parsed_response.get('message')
+                log.error(f"An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {error_message}; Deleting the lock and returning...")
+                await delete_cascade_file_lock_func(txid)
+                return f"Error encounterd while downloading cascade file for txid {txid}: {error_message}", None
+        if 'file_id' in parsed_response.keys():
+            file_identifier = parsed_response['file_id']
+            file_download_url = f"http://localhost:8080/files/{file_identifier}"
+            async with httpx.AsyncClient() as client:
+                async with client.stream('GET', file_download_url, headers=headers, timeout=500.0) as response:
+                    decoded_response = await response.aread()  # async read
+            cache_file_path = os.path.join(cache_dir, txid)
+            async with aiofiles.open(cache_file_path, mode='wb') as f:
+                await f.write(decoded_response)
+        else:
+            log.error(f"Response from Cascade API for txid {txid} did not contain a file_id! Deleting the lock and returning...")
+            await delete_cascade_file_lock_func(txid)
+            return f"Error encounterd while downloading cascade file for txid {txid}: {error_message}", None          
     except Exception as e:
-        log.error(f'An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {e} Deleting the lock and returning...')
-        lock_exists = await session.get(CascadeCacheFileLocks, txid)
-        if lock_exists:
-            await session.delete(lock_exists)
-            await session.commit()
+        log.error(f'An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {e}; Deleting the lock and returning...')
+        await delete_cascade_file_lock_func(txid)
         await add_bad_txid_to_db_func(txid, 'cascade', str(e))
-        return f"Error: An exception occurred while downloading the file. The txid {txid} has been marked as bad.", ""
-    lock_exists = await session.get(CascadeCacheFileLocks, txid)
-    if lock_exists:
-        await session.delete(lock_exists)
-        await session.commit()
+        return f"Error: An exception occurred while downloading the file. The txid {txid} has been marked as bad (it must be marked 3 times as bad before it will be skipped over in the future).", ""
     return cache_file_path, decoded_response
 
 
@@ -932,22 +943,28 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
                         decoded_response = await f.read()
                     return decoded_response, original_file_name_string
             log.info(f'Now attempting to download the file from Cascade API for txid {txid}...')
-            cache_file_path, decoded_response = await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir)
-            if cache_file_path is None or decoded_response is None:
-                log.warning(f"Skipping file download for txid {txid} as it's already in progress.")
-                return "File download in progress.", ""            
-            if isinstance(decoded_response, str) and decoded_response.startswith("Error"):
-                log.error(f'An error occurred while downloading the file for txid {txid}. Error: {decoded_response}')
-                return decoded_response, ""
-            decoded_response = await check_and_manage_cascade_file_cache_func(txid, cache_file_path, decoded_response)
-            verification_result = await verify_downloaded_cascade_file_func(decoded_response, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type)
-            if verification_result is not True:
-                log.error(f'File verification failed for txid {txid}. Error: {verification_result}')
-                return verification_result, ""
+            try:
+                cache_file_path, decoded_response = await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir)
+                if cache_file_path is None or decoded_response is None:
+                    log.warning(f"Skipping file download for txid {txid} as it's already in progress.")
+                    return "File download in progress.", ""                          
+                if isinstance(decoded_response, str) and decoded_response.startswith("Error"):
+                    log.error(f'An error occurred while downloading the file for txid {txid}. Error: {decoded_response}')
+                    return decoded_response, ""               
+                decoded_response = await check_and_manage_cascade_file_cache_func(txid, cache_file_path, decoded_response)
+            except Exception as e:
+                log.error(f'An error occurred while downloading the file for txid {txid}. Error: {e}')
+            try:
+                verification_result = await verify_downloaded_cascade_file_func(decoded_response, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type)
+                if verification_result is not True:
+                    log.error(f'File verification failed for txid {txid}. Error: {verification_result}')
+                    return verification_result, ""
+            except Exception as e:
+                log.error(f'An error occurred while verifying the file for txid {txid}. Error: {e}')
         log.info(f'Finished download process for txid {txid} in {time.time() - start_time} seconds.')
         return decoded_response, original_file_name_string
     except Exception as e:
-        log.error(f'An unexpected error occurred in download_publicly_accessible_cascade_file_by_registration_ticket_txid_func for txid {txid}. Error: {e}')
+        log.error(f'An unexpected error occurred during download process for txid {txid}. Error: {e}')
         raise
 
 
