@@ -31,3 +31,5 @@ tabulate
 cachetools
 aiofiles
 python-magic
+pydantic
+pytz
