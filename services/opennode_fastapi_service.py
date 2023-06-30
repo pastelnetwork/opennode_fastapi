@@ -27,6 +27,7 @@ import warnings
 import ipaddress
 import re
 import random
+import html
 import itertools
 import requests
 import hashlib
@@ -67,6 +68,7 @@ except ImportError:
 import aiohttp
 from httpx import AsyncClient
 import logging
+from logging.handlers import RotatingFileHandler
 from sqlalchemy import Index
 from sqlalchemy.orm import aliased
 from sqlalchemy import select
@@ -88,17 +90,21 @@ else:
 USER_AGENT = "AuthServiceProxy/0.1"
 HTTP_TIMEOUT = 90
 
+
 #Setup logging:
 log = logging.getLogger("PastelOpenNodeFastAPI")
 log.setLevel(logging.INFO)
-fh = logging.FileHandler('opennode_fastapi_log.txt')
-fh.setLevel(logging.INFO)
+log_file_full_path = 'opennode_fastapi_log.txt'
+rotating_handler = RotatingFileHandler(log_file_full_path, maxBytes=5*1024*1024, backupCount=10)
+# fh = logging.FileHandler('opennode_fastapi_log.txt')
+# fh.setLevel(logging.INFO)
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-fh.setFormatter(formatter)
+# fh.setFormatter(formatter)
 ch.setFormatter(formatter)
-log.addHandler(fh)
+rotating_handler.setFormatter(formatter)
+log.addHandler(rotating_handler)
 log.addHandler(ch)
 
 # Initialize the LRU cache and cache directory
@@ -830,7 +836,7 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
     decoded_response = None
     try:
         async with httpx.AsyncClient() as client:
-            async with client.stream('GET', request_url, headers=headers, timeout=500.0) as response:
+            async with client.stream('GET', request_url, headers=headers, timeout=600.0) as response:
                 body = await response.aread()  # async read
                 parsed_response = json.loads(body.decode())  # parse JSON
         if 'name' in parsed_response.keys():
@@ -1800,4 +1806,47 @@ def install_pasteld_func(network_name='testnet'):
 
 rpc_host, rpc_port, rpc_user, rpc_password, other_flags = get_local_rpc_settings_func()
 rpc_connection = AsyncAuthServiceProxy("http://%s:%s@%s:%s"%(rpc_user, rpc_password, rpc_host, rpc_port))
+
+
+def safe_highlight_func(text, pattern, replacement):
+    try:
+        return re.sub(pattern, replacement, text)
+    except Exception as e:
+        logging.warning(f"Failed to apply highlight rule: {e}")
+        return text
+
+
+def highlight_rules_func(text):
+    rules = [
+        (re.compile(r"\b(success\w*)\b", re.IGNORECASE), '#COLOR1_OPEN#', '#COLOR1_CLOSE#'),
+        (re.compile(r"\b(error|fail\w*)\b", re.IGNORECASE), '#COLOR2_OPEN#', '#COLOR2_CLOSE#'),
+        (re.compile(r"\b(pending)\b", re.IGNORECASE), '#COLOR3_OPEN#', '#COLOR3_CLOSE#'),
+        (re.compile(r"\b(response)\b", re.IGNORECASE), '#COLOR4_OPEN#', '#COLOR4_CLOSE#'),
+        (re.compile(r'\"(.*?)\"', re.IGNORECASE), '#COLOR5_OPEN#', '#COLOR5_CLOSE#'),
+        (re.compile(r"\'(.*?)\'", re.IGNORECASE), "#COLOR6_OPEN#", '#COLOR6_CLOSE#'),
+        (re.compile(r"\`(.*?)\`", re.IGNORECASE), '#COLOR7_OPEN#', '#COLOR7_CLOSE#'),
+        (re.compile(r"\b(https?://\S+)\b", re.IGNORECASE), '#COLOR8_OPEN#', '#COLOR8_CLOSE#'),
+        (re.compile(r"\b(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3})\b", re.IGNORECASE), '#COLOR9_OPEN#', '#COLOR9_CLOSE#'),
+        (re.compile(r"\b(_{100,})\b", re.IGNORECASE), '#COLOR10_OPEN#', '#COLOR10_CLOSE#'),
+        (re.compile(r"\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\b", re.IGNORECASE), '#COLOR11_OPEN#', '#COLOR11_CLOSE#'),
+        (re.compile(r"\b([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b", re.IGNORECASE), '#COLOR12_OPEN#', '#COLOR12_CLOSE#'),
+        (re.compile(r"\b([a-f0-9]{64})\b", re.IGNORECASE), '#COLOR13_OPEN#', '#COLOR13_CLOSE#')                                
+    ]
+    for pattern, replacement_open, replacement_close in rules:
+        text = pattern.sub(f"{replacement_open}\\1{replacement_close}", text)
+    text = html.escape(text)
+    text = text.replace('#COLOR1_OPEN#', '<span style="color: #baffc9;">').replace('#COLOR1_CLOSE#', '</span>')
+    text = text.replace('#COLOR2_OPEN#', '<span style="color: #ffb3ba;">').replace('#COLOR2_CLOSE#', '</span>')
+    text = text.replace('#COLOR3_OPEN#', '<span style="color: #ffdfba;">').replace('#COLOR3_CLOSE#', '</span>')
+    text = text.replace('#COLOR4_OPEN#', '<span style="color: #ffffba;">').replace('#COLOR4_CLOSE#', '</span>')
+    text = text.replace('#COLOR5_OPEN#', '<span style="color: #bdc7e7;">').replace('#COLOR5_CLOSE#', '</span>')
+    text = text.replace('#COLOR6_OPEN#', "<span style='color: #d5db9c;'>").replace('#COLOR6_CLOSE#', '</span>')
+    text = text.replace('#COLOR7_OPEN#', '<span style="color: #a8d8ea;">').replace('#COLOR7_CLOSE#', '</span>')
+    text = text.replace('#COLOR8_OPEN#', '<span style="color: #e2a8a8;">').replace('#COLOR8_CLOSE#', '</span>')
+    text = text.replace('#COLOR9_OPEN#', '<span style="color: #ece2d0;">').replace('#COLOR9_CLOSE#', '</span>')
+    text = text.replace('#COLOR10_OPEN#', '<span style="color: #d6e0f0;">').replace('#COLOR10_CLOSE#', '</span>')
+    text = text.replace('#COLOR11_OPEN#', '<span style="color: #f2d2e2;">').replace('#COLOR11_CLOSE#', '</span>')
+    text = text.replace('#COLOR12_OPEN#', '<span style="color: #d5f2ea;">').replace('#COLOR12_CLOSE#', '</span>')
+    text = text.replace('#COLOR13_OPEN#', '<span style="color: #f2ebd3;">').replace('#COLOR13_CLOSE#', '</span>')
+    return text
 
