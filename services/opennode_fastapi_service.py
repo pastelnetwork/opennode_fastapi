@@ -1,61 +1,35 @@
 import base64
-import sqlite3
-import io
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
-import cachetools
-from cachetools import LRUCache, cached
-from cachetools.keys import hashkey
+from cachetools import LRUCache
 import aiofiles
-from aiofiles.os import stat as aio_stat
-
-import sqlalchemy as sa
-from sqlalchemy import func, update, delete, desc
 from sqlalchemy.future import select
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSession
 from fastapi import BackgroundTasks, Depends, Body
 
 from data import db_session
 from data.db_session import add_record_to_write_queue
-from data.opennode_fastapi import OpenNodeFastAPIRequests, ParsedDDServiceData, RawDDServiceData, PastelBlockData, PastelAddressData, PastelTransactionData, PastelTransactionInputData, PastelTransactionOutputData, CascadeCacheFileLocks, BadTXID
+from data.opennode_fastapi import ParsedDDServiceData, RawDDServiceData, PastelBlockData, PastelAddressData, PastelTransactionData, PastelTransactionInputData, PastelTransactionOutputData, CascadeCacheFileLocks, BadTXID
 import os
-import sys
 import time
 import json
-import traceback
 import warnings
 import ipaddress
 import re
 import random
 import html
-import itertools
-import requests
 import hashlib
 import magic
 import subprocess
 import asyncio
-import pprint
 from collections import Counter
 import numpy as np
 import pandas as pd
-from pandas._libs.tslibs.timestamps import Timestamp
 import httpx
 from httpx import AsyncClient, Timeout, Limits
 import dirtyjson
-from pathlib import Path
-
-from timebudget import timebudget
-from tqdm import tqdm
 import zstandard as zstd
-import concurrent.futures
 import platform
 import psutil
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
-import http.client as httplib
 import base64
 import decimal
 import statistics
@@ -65,14 +39,12 @@ try:
     import urllib.parse as urlparse
 except ImportError:
     import urlparse
-import aiohttp
 from httpx import AsyncClient
 import logging
 from logging.handlers import RotatingFileHandler
 from sqlalchemy import Index
 from sqlalchemy.orm import aliased
 from sqlalchemy import select
-from tabulate import tabulate
 
 
 #You must install libmagic with: sudo apt-get install libmagic-dev
@@ -96,12 +68,9 @@ log = logging.getLogger("PastelOpenNodeFastAPI")
 log.setLevel(logging.INFO)
 log_file_full_path = 'opennode_fastapi_log.txt'
 rotating_handler = RotatingFileHandler(log_file_full_path, maxBytes=5*1024*1024, backupCount=10)
-# fh = logging.FileHandler('opennode_fastapi_log.txt')
-# fh.setLevel(logging.INFO)
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-# fh.setFormatter(formatter)
 ch.setFormatter(formatter)
 rotating_handler.setFormatter(formatter)
 log.addHandler(rotating_handler)
@@ -185,6 +154,15 @@ def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~
             other_flags[current_flag] = current_value
     return rpchost, rpcport, rpcuser, rpcpassword, other_flags
     
+    
+def get_remote_rpc_settings_func():
+    rpchost = '45.67.221.205'
+    #rpchost = '209.145.54.164'
+    rpcuser = 'IzfUzMZI'
+    rpcpassword = 'ku5YhVtKSNWMIYp'
+    rpcport = '9932'
+    return rpchost, rpcport, rpcuser, rpcpassword    
+
 
 class JSONRPCException(Exception):
     def __init__(self, rpc_error):
@@ -796,7 +774,7 @@ async def check_and_update_cascade_ticket_bad_txid_func(txid: str, session):
         raise
 
 
-async def startup_cascade_file_download_lock_cleanup_func(background_tasks: BackgroundTasks):
+async def startup_cascade_file_download_lock_cleanup_func():
     async with db_session.create_async_session() as session:
         lock_expiration_time = timedelta(minutes=10)
         current_time = datetime.utcnow()
@@ -810,7 +788,7 @@ async def startup_cascade_file_download_lock_cleanup_func(background_tasks: Back
         log.info(f"Deleted {len(stale_locks)} stale cascade file download locks")
             
             
-async def delete_cascade_file_lock_func(txid: str):
+async def delete_cascade_file_lock_func(session, txid: str):
     lock_exists = await session.get(CascadeCacheFileLocks, txid)
     if lock_exists:
         await session.delete(lock_exists)
@@ -843,7 +821,7 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
             if parsed_response.get('name') == 'InternalServerError':
                 error_message = parsed_response.get('message')
                 log.error(f"An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {error_message}; Deleting the lock and returning...")
-                await delete_cascade_file_lock_func(txid)
+                await delete_cascade_file_lock_func(session, txid)
                 return f"Error encounterd while downloading cascade file for txid {txid}: {error_message}", None
         if 'file_id' in parsed_response.keys():
             file_identifier = parsed_response['file_id']
@@ -856,11 +834,11 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
                 await f.write(decoded_response)
         else:
             log.error(f"Response from Cascade API for txid {txid} did not contain a file_id! Deleting the lock and returning...")
-            await delete_cascade_file_lock_func(txid)
+            await delete_cascade_file_lock_func(session, txid)
             return f"Error encounterd while downloading cascade file for txid {txid}: {error_message}", None          
     except Exception as e:
         log.error(f'An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {e}; Deleting the lock and returning...')
-        await delete_cascade_file_lock_func(txid)
+        await delete_cascade_file_lock_func(session, txid)
         await add_bad_txid_to_db_func(txid, 'cascade', str(e))
         return f"Error: An exception occurred while downloading the file. The txid {txid} has been marked as bad (it must be marked 3 times as bad before it will be skipped over in the future).", ""
     return cache_file_path, decoded_response
@@ -1345,8 +1323,8 @@ async def bulk_test_cascade_func(n: int):
         log.error(f'Error occurred during the bulk test of cascade: {e}', exc_info=True)
 
 
-async def run_populate_database_with_all_dd_service_data_func(background_tasks: BackgroundTasks = Depends):
-    background_tasks.add_task(await populate_database_with_all_dd_service_data_func())
+async def run_populate_database_with_all_dd_service_data_func():
+    await populate_database_with_all_dd_service_data_func()
     return {"message": 'Started background task to populate database with all sense data...'}
 
 
@@ -1507,7 +1485,7 @@ async def get_all_registration_ticket_txids_corresponding_to_a_collection_ticket
             except:
                 response_json = 'Unable to find the activation ticket in the blockchain'
     else:
-        response_json = f'The txid given ({activation_ticksense_collection_ticket_txidet_txid}) is not a valid activation ticket txid for a collection ticket'
+        response_json = f'The txid given ({collection_ticket_txid}) is not a valid activation ticket txid for a collection ticket'
     return response_json
         
 
