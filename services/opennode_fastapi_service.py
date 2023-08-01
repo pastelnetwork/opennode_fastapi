@@ -741,9 +741,10 @@ async def add_bad_txid_to_db_func(txid, type, reason):
 async def get_bad_txids_from_db_func(type):
     try:
         async with db_session.create_async_session() as session:
-            result = await session.execute(
-                select(BadTXID).where(BadTXID.ticket_type == type, BadTXID.failed_attempts >= 3,
-                                      BadTXID.next_attempt_time < datetime.utcnow()))
+            # result = await session.execute(
+            #     select(BadTXID).where(BadTXID.ticket_type == type, BadTXID.failed_attempts >= 3,
+            #                           BadTXID.next_attempt_time < datetime.utcnow()))
+            result = await session.execute(select(BadTXID).where(BadTXID.ticket_type == type, BadTXID.failed_attempts >= 1))
             bad_txids = result.scalars().all()
         return [bad_tx.txid for bad_tx in bad_txids]
     except Exception as e:
@@ -979,6 +980,9 @@ async def populate_database_with_all_dd_service_data_func():
             minimum_testnet_height_for_nft_tickets = 290000
             if is_nft_ticket and corresponding_pastel_blockchain_ticket_data['height'] <= minimum_testnet_height_for_nft_tickets:
                 continue
+            minimum_testnet_height_for_sense_tickets = 300000
+            if not is_nft_ticket and corresponding_pastel_blockchain_ticket_data['height'] <= minimum_testnet_height_for_sense_tickets:
+                continue            
             current_dd_service_data, is_cached_response = await get_parsed_dd_service_results_by_registration_ticket_txid_func(current_txid)
         except Exception as e:
             await add_bad_txid_to_db_func(current_txid, ticket_type, str(e))
@@ -987,20 +991,20 @@ async def populate_database_with_all_dd_service_data_func():
 
 def print_dict_structure(d, indent=0):
     for key, value in d.items():
-        print('\t' * indent + str(key))
+        log.info('\t' * indent + str(key))
         if isinstance(value, dict):
             print_dict_structure(value, indent+1)
         elif isinstance(value, list):
             if value:  # check if list is not empty
                 if isinstance(value[0], dict):
-                    print('\t' * (indent+1) + str(type(value[0])))
+                    log.info('\t' * (indent+1) + str(type(value[0])))
                     print_dict_structure(value[0], indent+2)
                 else:
-                    print('\t' * (indent+1) + str(type(value[0])))
+                    log.info('\t' * (indent+1) + str(type(value[0])))
             else:
-                print('\t' * (indent+1) + 'list is empty')
+                log.info('\t' * (indent+1) + 'list is empty')
         else:
-            print('\t' * (indent+1) + str(type(value)))
+            log.info('\t' * (indent+1) + str(type(value)))
 
 
 async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
@@ -1025,11 +1029,13 @@ async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
 
 async def get_random_cascade_txids_func(n: int) -> List[str]:
     try:
+        # min_blockheight_for_ticket = 324550
         log.info(f'Attempting to get {n} random cascade TXIDs...')
         tickets_obj = await get_all_pastel_blockchain_tickets_func()
         cascade_ticket_dict = json.loads(tickets_obj['action'])
         cascade_ticket_dict_df = pd.DataFrame(cascade_ticket_dict).T
         cascade_ticket_dict_df_filtered = cascade_ticket_dict_df[cascade_ticket_dict_df['action_type'] == 'cascade'].drop_duplicates(subset=['txid'])
+        # cascade_ticket_dict_df_filtered = cascade_ticket_dict_df_filtered[cascade_ticket_dict_df_filtered['height'] >= min_blockheight_for_ticket]
         txids = cascade_ticket_dict_df_filtered['txid'].tolist()
         if n < 10:
             txids_sample = random.sample(txids, min(6*n, len(txids))) # Sample 6n TXIDs to increase the chance of getting enough public ones.
