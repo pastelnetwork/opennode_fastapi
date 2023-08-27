@@ -1,9 +1,6 @@
-from typing import List
 import sqlalchemy as sa
-import sqlalchemy.orm as orm
 from data.modelbase import SqlAlchemyBase
-from sqlalchemy import Column, String, BigInteger, ForeignKey, DECIMAL, DateTime
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, String, DateTime
 import datetime
 from pydantic import BaseModel
 
@@ -90,50 +87,13 @@ class RawDDServiceData(SqlAlchemyBase):
     raw_dd_service_data_json: str = sa.Column(sa.String, nullable=False)
     corresponding_pastel_blockchain_ticket_data: str = sa.Column(sa.String, nullable=False)
 
-class PastelBlockData(SqlAlchemyBase):
-    __tablename__ = 'pastel_block_data'
-    block_hash = Column(String(64), nullable=False, index=True, primary_key=True)
-    block_height = Column(BigInteger, nullable=False, index=True)
-    previous_block_hash = Column(String(64), nullable=True, index=True)
-    transactions = relationship("PastelTransactionData", back_populates="block", cascade="all, delete-orphan")
-    timestamp = Column(DateTime, nullable=True)
-    
-class PastelAddressData(SqlAlchemyBase):
-    __tablename__ = 'pastel_address_data'
-    pastel_address = Column(String(34), nullable=False, index=True, primary_key=True)
-    outputs = relationship("PastelTransactionOutputData", back_populates="address")
-    balance = Column(DECIMAL(precision=16, scale=8), nullable=False, default=0.0)
-
-class PastelTransactionData(SqlAlchemyBase):
-    __tablename__ = 'pastel_transaction_data'
-    transaction_id = Column(String(64), nullable=False, index=True, primary_key=True)
-    inputs = relationship("PastelTransactionInputData", back_populates="transaction", cascade="all, delete-orphan")
-    outputs = relationship("PastelTransactionOutputData", back_populates="transaction", cascade="all, delete-orphan")
-    block_hash = Column(String(64), ForeignKey('pastel_block_data.block_hash'), nullable=True, index=True)
-    block = relationship("PastelBlockData", back_populates="transactions")
-    total_value = Column(DECIMAL(precision=16, scale=8), nullable=False, default=0.0)
-    confirmations = Column(BigInteger, nullable=False, default=0)
-
-class PastelTransactionInputData(SqlAlchemyBase):
-    __tablename__ = 'pastel_transaction_input_data'
-    input_id = Column(BigInteger, nullable=False, primary_key=True)
-    transaction_id = Column(String(64), ForeignKey('pastel_transaction_data.transaction_id'), nullable=False, index=True)
-    transaction = relationship("PastelTransactionData", back_populates="inputs")
-    previous_output_id = Column(BigInteger, ForeignKey('pastel_transaction_output_data.output_id'), nullable=False, index=True)
-    previous_output = relationship("PastelTransactionOutputData", back_populates="inputs")
-
-class PastelTransactionOutputData(SqlAlchemyBase):
-    __tablename__ = 'pastel_transaction_output_data'
-    output_id = Column(BigInteger, nullable=False, primary_key=True)
-    transaction_id = Column(String(64), ForeignKey('pastel_transaction_data.transaction_id'), nullable=False, index=True)
-    transaction = relationship("PastelTransactionData", back_populates="outputs")
-    amount = Column(DECIMAL(precision=16, scale=8), nullable=False)
-    pastel_address = Column(String(34), ForeignKey('pastel_address_data.pastel_address'), nullable=False, index=True)
-    address = relationship("PastelAddressData", back_populates="outputs")
-    inputs = relationship("PastelTransactionInputData", back_populates="previous_output")
-    
 class CascadeCacheFileLocks(SqlAlchemyBase):
     __tablename__ = 'cascade_cache_file_locks'
+    txid = Column(String(64), primary_key=True)
+    lock_created_at = Column(DateTime, default=datetime.datetime.utcnow)  # lock creation timestamp
+    
+class DdServiceLocks(SqlAlchemyBase):
+    __tablename__ = 'dd_service_locks'
     txid = Column(String(64), primary_key=True)
     lock_created_at = Column(DateTime, default=datetime.datetime.utcnow)  # lock creation timestamp
     
