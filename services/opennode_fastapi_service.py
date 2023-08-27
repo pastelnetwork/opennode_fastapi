@@ -1,51 +1,50 @@
+import asyncio
 import base64
+import decimal
+import hashlib
+import html
+import ipaddress
+import json
+import os
+import platform
+import random
+import re
+import statistics
+import subprocess
+import time
+import warnings
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
-from cachetools import LRUCache
+
 import aiofiles
+import dirtyjson
+import httpx
+import magic
+import numpy as np
+import pandas as pd
+import psutil
+import zstandard as zstd
+from cachetools import LRUCache
+from httpx import AsyncClient, Limits, Timeout
 from sqlalchemy.future import select
-from fastapi import BackgroundTasks, Depends, Body
+from sqlalchemy.exc import OperationalError, IntegrityError, DBAPIError
 
 from data import db_session
 from data.db_session import add_record_to_write_queue
-from data.opennode_fastapi import ParsedDDServiceData, RawDDServiceData, PastelBlockData, PastelAddressData, PastelTransactionData, PastelTransactionInputData, PastelTransactionOutputData, CascadeCacheFileLocks, BadTXID
-import os
-import time
-import json
-import warnings
-import ipaddress
-import re
-import random
-import html
-import hashlib
-import magic
-import subprocess
-import asyncio
-from collections import Counter
-import numpy as np
-import pandas as pd
-import httpx
-from httpx import AsyncClient, Timeout, Limits
-import dirtyjson
-import zstandard as zstd
-import platform
-import psutil
-import base64
-import decimal
-import statistics
-from fastapi import BackgroundTasks, Depends
-
+from data.opennode_fastapi import (
+    BadTXID,
+    CascadeCacheFileLocks,
+    DdServiceLocks,
+    ParsedDDServiceData,
+    RawDDServiceData,
+)
 try:
     import urllib.parse as urlparse
 except ImportError:
     import urlparse
-from httpx import AsyncClient
 import logging
 from logging.handlers import RotatingFileHandler
-from sqlalchemy import Index
-from sqlalchemy.orm import aliased
-from sqlalchemy import select
-
 
 #You must install libmagic with: sudo apt-get install libmagic-dev
 number_of_cpus = os.cpu_count()
@@ -61,7 +60,6 @@ else:
 
 USER_AGENT = "AuthServiceProxy/0.1"
 HTTP_TIMEOUT = 90
-
 
 #Setup logging:
 log = logging.getLogger("PastelOpenNodeFastAPI")
@@ -81,7 +79,6 @@ cache_dir = "/home/ubuntu/cascade_opennode_fastapi_cache"
 #create cache directory if it doesn't exist
 os.makedirs(cache_dir, exist_ok=True)
 
-
 class SizeLimitedLRUCache(LRUCache):
     def __init__(self, maxsize, *args, **kwargs):
         super().__init__(maxsize, *args, **kwargs)
@@ -98,11 +95,9 @@ class SizeLimitedLRUCache(LRUCache):
             self.current_size -= self.getsize(removed_value)
             os.remove(os.path.join(cache_dir, removed_key))  # delete the file associated with the key
         super().__setitem__(key, value)
-
         
 # Create a cache with a maximum size
 cache = SizeLimitedLRUCache(maxsize=10 * 1024 * 1024 * 1024)  # 10 GB
-
 
 async def load_cache():  # Populate cache from the existing files in the cache directory
     for filename in os.listdir(cache_dir):
@@ -110,24 +105,6 @@ async def load_cache():  # Populate cache from the existing files in the cache d
         if os.path.isfile(file_path):
             cache[filename] = file_path
 
-    
-# Set up real-time notification system
-class NotificationSystem:
-    @staticmethod
-    def notify(event_type: str, data: dict):
-        # Sample implementation for sending notifications via email
-        subject = f"Notification: {event_type}"
-        body = str(data)
-        recipients = ["jeff@pastel.network"]  # List of subscribers
-        # send_email(subject, body, recipients)  # Implement send_email function
-
-# Additional index to improve address balance lookup
-Index('idx_pastel_address_data_address', PastelAddressData.pastel_address)
-
-# Optimized block scanning configuration
-BLOCK_SCAN_BATCH_SIZE = 100
-
-   
 def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~/.pastel/")):
     with open(os.path.join(directory_with_pastel_conf, "pastel.conf"), 'r') as f:
         lines = f.readlines()
@@ -154,7 +131,6 @@ def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~
             other_flags[current_flag] = current_value
     return rpchost, rpcport, rpcuser, rpcpassword, other_flags
     
-    
 def get_remote_rpc_settings_func():
     rpchost = '45.67.221.205'
     #rpchost = '209.145.54.164'
@@ -163,13 +139,13 @@ def get_remote_rpc_settings_func():
     rpcport = '9932'
     return rpchost, rpcport, rpcuser, rpcpassword    
 
-
 class JSONRPCException(Exception):
     def __init__(self, rpc_error):
         parent_args = []
         try:
             parent_args.append(rpc_error['message'])
-        except:
+        except Exception as e:
+            log.error(f"Error occurred in JSONRPCException: {e}")
             pass
         Exception.__init__(self, *parent_args)
         self.error = rpc_error
@@ -182,13 +158,11 @@ class JSONRPCException(Exception):
     def __repr__(self):
         return '<%s \'%s\'>' % (self.__class__.__name__, self)
 
-
 def EncodeDecimal(o):
     if isinstance(o, decimal.Decimal):
         return float(round(o, 8))
     raise TypeError(repr(o) + " is not JSON serializable")
     
-
 class AsyncAuthServiceProxy:
     _semaphore = asyncio.BoundedSemaphore(10) # Limit to 10 concurrent requests
     def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2, request_timeout=60):
@@ -238,6 +212,7 @@ class AsyncAuthServiceProxy:
                         self.service_url, headers=headers, data=postdata)
                     break
                 except Exception as e:
+                    log.error(f"Error occurred in __call__: {e}")
                     err_msg = f"Failed to connect to {self.url.hostname}:{self.url.port}"
                     rtm = self.reconnect_timeout
                     if rtm:
@@ -254,7 +229,6 @@ class AsyncAuthServiceProxy:
                     'code': -343, 'message': 'missing JSON-RPC result'})
             else:
                 return response_json['result']
-       
         
 def get_current_pastel_block_height_func():
     global rpc_connection
@@ -262,7 +236,6 @@ def get_current_pastel_block_height_func():
     best_block_details = rpc_connection.getblock(best_block_hash)
     curent_block_height = best_block_details['height']
     return curent_block_height
-
 
 def get_previous_block_hash_and_merkle_root_func():
     global rpc_connection
@@ -272,31 +245,31 @@ def get_previous_block_hash_and_merkle_root_func():
     previous_block_merkle_root = previous_block_details['merkleroot']
     return previous_block_hash, previous_block_merkle_root, previous_block_height
 
-
 def get_last_block_data_func():
     global rpc_connection
     current_block_height = get_current_pastel_block_height_func()
     block_data = rpc_connection.getblock(str(current_block_height))
     return block_data
-    
 
 def check_psl_address_balance_func(address_to_check):
     global rpc_connection
     balance_at_address = rpc_connection.z_getbalance(address_to_check) 
     return balance_at_address
-
   
 def get_raw_transaction_func(txid):
     global rpc_connection
     raw_transaction_data = rpc_connection.getrawtransaction(txid, 1) 
     return raw_transaction_data
 
-
 async def verify_message_with_pastelid_func(pastelid, message_to_verify, pastelid_signature_on_message) -> str:
     global rpc_connection
     verification_result = await rpc_connection.pastelid('verify', message_to_verify, pastelid_signature_on_message, pastelid, 'ed448')
     return verification_result['verification']
 
+async def check_masternode_top_func():
+    global rpc_connection
+    masternode_top_command_output = await rpc_connection.masternode('top')
+    return masternode_top_command_output
 
 async def check_supernode_list_func():
     global rpc_connection
@@ -328,7 +301,6 @@ async def check_supernode_list_func():
     masternode_list_full_df['rank'] = masternode_list_full_df['rank'].astype(int)
     masternode_list_full_df__json = masternode_list_full_df.to_json(orient='index')
     return masternode_list_full_df__json
-    
 
 async def get_network_storage_fees_func():
     global rpc_connection
@@ -336,7 +308,6 @@ async def get_network_storage_fees_func():
     network_median_nft_ticket_fee = await rpc_connection.storagefee('getnftticketfee')
     json_results = {'network_median_storage_fee': network_median_storage_fee, 'network_median_nft_ticket_fee': network_median_nft_ticket_fee}
     return json_results
-    
     
 def get_local_machine_supernode_data_func():
     local_machine_ip = get_external_ip_func()
@@ -353,7 +324,6 @@ def get_local_machine_supernode_data_func():
         local_sn_pastelid = local_machine_supernode_data['extKey'].values[0]
     return local_machine_supernode_data, local_sn_rank, local_sn_pastelid, local_machine_ip_with_proper_port
 
-
 def get_sn_data_from_pastelid_func(specified_pastelid):
     supernode_list_full_df = check_supernode_list_func()
     specified_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['extKey'] == specified_pastelid]
@@ -363,7 +333,6 @@ def get_sn_data_from_pastelid_func(specified_pastelid):
     else:
         return specified_machine_supernode_data
 
-    
 def get_sn_data_from_sn_pubkey_func(specified_sn_pubkey):
     supernode_list_full_df = check_supernode_list_func()
     specified_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['pubkey'] == specified_sn_pubkey]
@@ -373,14 +342,12 @@ def get_sn_data_from_sn_pubkey_func(specified_sn_pubkey):
     else:
         return specified_machine_supernode_data
    
-   
 def check_if_transparent_psl_address_is_valid_func(pastel_address_string):
     if len(pastel_address_string) == 35 and (pastel_address_string[0:2] == 'Pt'):
         pastel_address_is_valid = 1
     else:
         pastel_address_is_valid = 0
     return pastel_address_is_valid
-
 
 def check_if_transparent_lsp_address_is_valid_func(pastel_address_string):
     if len(pastel_address_string) == 35 and (pastel_address_string[0:2] == 'tP'):
@@ -389,14 +356,12 @@ def check_if_transparent_lsp_address_is_valid_func(pastel_address_string):
         pastel_address_is_valid = 0
     return pastel_address_is_valid
 
-
 async def get_df_json_from_tickets_list_rpc_response_func(rpc_response):
     tickets_df = pd.DataFrame.from_records([rpc_response[idx]['ticket'] for idx, x in enumerate(rpc_response)])
     tickets_df['txid'] = [rpc_response[idx]['txid'] for idx, x in enumerate(rpc_response)]
     tickets_df['height'] = [rpc_response[idx]['height'] for idx, x in enumerate(rpc_response)]
     tickets_df_json = tickets_df.to_json(orient='index')
     return tickets_df_json
-
 
 async def get_pastel_blockchain_ticket_func(txid):
     global rpc_connection
@@ -425,7 +390,6 @@ async def get_pastel_blockchain_ticket_func(txid):
         response_json = 'No ticket found for this txid'
     return response_json
 
-
 async def get_all_pastel_blockchain_tickets_func(verbose=0):
     if verbose:
         log.info('Now retrieving all Pastel blockchain tickets...')
@@ -438,7 +402,6 @@ async def get_all_pastel_blockchain_tickets_func(verbose=0):
         if response is not None and len(response) > 0:
             tickets_obj[current_ticket_type] = await get_df_json_from_tickets_list_rpc_response_func(response)
     return tickets_obj
-
 
 async def get_usernames_from_pastelid_func(pastelid):
     global rpc_connection
@@ -456,7 +419,6 @@ async def get_usernames_from_pastelid_func(pastelid):
     else:
         return 'Error! No username found for this pastelid'
 
-
 async def get_pastelid_from_username_func(username):
     global rpc_connection
     response = await rpc_connection.tickets('list', 'username')
@@ -465,7 +427,6 @@ async def get_pastelid_from_username_func(username):
             if response[idx]['ticket']['username'] == username:
                 return response[idx]['ticket']['pastelID']
     return 'Error! No pastelid found for this username'
-
 
 async def testnet_pastelid_file_dispenser_func(password, verbose=0):
     log.info('Now generating a pastelid...')
@@ -488,31 +449,83 @@ async def testnet_pastelid_file_dispenser_func(password, verbose=0):
             log.error('There was an issue creating the pastelid!')
     return pastelid_pubkey, pastelid_data
 
+async def startup_dd_service_lock_cleanup_func():
+    async with db_session.create_async_session() as session:
+        lock_expiration_time = timedelta(minutes=10)
+        current_time = datetime.utcnow()
+        stale_locks_query = select(DdServiceLocks).where(DdServiceLocks.lock_created_at < (current_time - lock_expiration_time))
+        result = await session.execute(stale_locks_query)
+        stale_locks = result.scalars().all()
+        for lock in stale_locks:
+            session.delete(lock)
+        await session.commit()
+
+async def periodic_dd_service_lock_cleanup_func():
+    while True:
+        await asyncio.sleep(600)  # Run every 10 minutes
+        await startup_dd_service_lock_cleanup_func()
+        
+async def acquire_dd_service_lock(session, txid, lock_expiration_time):
+    current_time = datetime.utcnow()
+    lock = await session.get(DdServiceLocks, txid)
+    if lock and current_time - lock.lock_created_at < lock_expiration_time:
+        return False  # Lock exists and is not stale
+    retry_count = 0
+    max_retries = 5  # Or any other number you consider appropriate
+    initial_delay = 0.1
+    backoff_factor = 2
+    while retry_count < max_retries:
+        try:
+            if lock:  # Lock is stale, update it
+                lock.lock_created_at = current_time
+            else:  # Lock does not exist, create it
+                lock = DdServiceLocks(txid=txid, lock_created_at=current_time)
+                session.add(lock)
+            await session.commit()
+            return True
+        except Exception as e:
+            log.error(f"An exception occurred while attempting to acquire a DD service lock for txid {txid}: {e}")
+            retry_count += 1
+            backoff_time = min(60, initial_delay * (backoff_factor ** retry_count))  # 60 seconds max delay
+            await asyncio.sleep(backoff_time)
+    return False  # Return False if all retries fail
+
+async def delete_dd_service_lock(session, txid):
+    lock = await session.get(DdServiceLocks, txid)
+    if lock:
+        await session.delete(lock)
+        await session.commit()
 
 async def get_raw_dd_service_results_from_local_db_func(txid: str) -> Optional[RawDDServiceData]:
     try:
-        async with db_session.create_async_session() as session: 
+        async with db_session.create_async_session() as session:
             query = select(RawDDServiceData).filter(RawDDServiceData.registration_ticket_txid == txid)
             result = await session.execute(query)
-        return result.scalar_one_or_none()
+            found_data = result.scalar_one_or_none()
+        return found_data
     except Exception as e:
-        log.error(f"Failed to get raw DD service results from local DB for txid {txid} with error: {e}")
+        log.error(f"An exception occurred while attempting to get raw DD service results from local DB for txid {txid}: {e}")
         raise e
-
-
+    
 async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type: str, corresponding_pastel_blockchain_ticket_data: dict) -> RawDDServiceData:
+    lock_expiration_time = timedelta(minutes=10)
+    async with db_session.create_async_session() as session:
+        if not await acquire_dd_service_lock(session, txid, lock_expiration_time):
+            log.warning(f"Download of dd-service data for txid {txid} is already in progress, skipping...")
+            return None
     try:
         requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
         if ticket_type == 'sense':
             request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
-        elif ticket_type == 'nft':
-            request_url = f'http://localhost:8080/nfts/get_dd_result_file?pid={requester_pastelid}&txid={txid}'
         else:
-            raise ValueError(f'Invalid ticket type for txid {txid}! Ticket type must be either "sense" or "nft"!')
+            raise ValueError(f'Invalid ticket type for txid {txid}! Ticket type must be "sense"!')
         headers = {'Authorization': 'testpw123'}
         async with httpx.AsyncClient() as client:
-            log.info(f'Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}...') 
-            response = await client.get(request_url, headers=headers, timeout=500.0)    
+            log.info(f'Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}') 
+            response = await client.get(request_url, headers=headers, timeout=60.0)
+            if response.status_code != 200:
+                log.error(f"Received {response.status_code} from Sense API for txid {txid}.")
+                raise ValueError(f"Received {response.status_code} from Sense API.")
             log.info(f'Finished downloading Raw DD-Service results for ticket type {ticket_type} and txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
         parsed_response = response.json()
         if parsed_response['file'] is None:
@@ -529,42 +542,42 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
         raw_dd_service_data.pastel_block_height_when_request_submitted = str(final_response_df['pastel_block_height_when_request_submitted'][0])
         raw_dd_service_data.raw_dd_service_data_json = decoded_response
         raw_dd_service_data.corresponding_pastel_blockchain_ticket_data = str(corresponding_pastel_blockchain_ticket_data)
-        try:
-            await add_record_to_write_queue(raw_dd_service_data)
-        except Exception as e:
-            log.error(f"Failed to save raw DD service results to local DB for txid {txid} with error: {e}")
+        # Data Validation
+        if not all([raw_dd_service_data.ticket_type, raw_dd_service_data.registration_ticket_txid, raw_dd_service_data.hash_of_candidate_image_file]):
+            log.error("Validation failed: Some required fields are missing.")
+            raise ValueError("Validation failed: Some required fields are missing.")
+        await add_record_to_write_queue(raw_dd_service_data)
+        async with db_session.create_async_session() as session:
+            await delete_dd_service_lock(session, txid)
         return raw_dd_service_data
     except Exception as e:
+        async with db_session.create_async_session() as session:
+            await delete_dd_service_lock(session, txid)
         log.error(f"Failed to get raw DD service results from Sense API for txid {txid} with error: {e}")
         raise e
-
-
+    
 async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str) -> RawDDServiceData:
     try:
-        #To clear out the raw_dd_service_data table of any nft type tickets, run:
-        # sqlite3 /home/ubuntu/opennode_fastapi/db/opennode_fastapi.sqlite "DELETE FROM raw_dd_service_data WHERE ticket_type='nft';"        
         raw_dd_service_data = await get_raw_dd_service_results_from_local_db_func(txid)
-        if raw_dd_service_data is not None:  #First check if we already have the results in our local sqlite database:
-            is_cached_response = True
-            return raw_dd_service_data, is_cached_response #If we don't have the results in our local sqlite database, then we need to download them from the Sense A
+        if raw_dd_service_data:
+            log.info(f"Data found in local cache for txid {txid}.")
+            return raw_dd_service_data, True
+        log.info(f"Data not found in local cache for txid {txid}, fetching from API.")
         corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(txid)
-        if 'ticket' in corresponding_pastel_blockchain_ticket_data.keys():            
-            if 'nft_ticket' in corresponding_pastel_blockchain_ticket_data['ticket'].keys():
-                ticket_type = 'nft'
-            elif 'action_ticket' in corresponding_pastel_blockchain_ticket_data['ticket'].keys():
-                ticket_type = 'sense'
-            else:
-                ticket_type = 'unknown'
+        ticket = corresponding_pastel_blockchain_ticket_data.get('ticket', {})
+        if 'nft_ticket' in ticket:
+            ticket_type = 'nft'
+        elif 'action_ticket' in ticket:
+            ticket_type = 'sense'
         else:
+            log.warning(f"Unknown ticket type for txid {txid}.")
             ticket_type = 'unknown'
         raw_dd_service_data = await get_raw_dd_service_results_from_sense_api_func(txid, ticket_type, corresponding_pastel_blockchain_ticket_data)
-        is_cached_response = False
-        return raw_dd_service_data, is_cached_response
+        return raw_dd_service_data, False
     except Exception as e:
         log.error(f"Failed to get raw DD service results for txid {txid} with error: {e}")
         raise e
-
-
+    
 def decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(compressed_b64_string: str) -> str:
     try:
         decompressed_data = zstd.decompress(base64.b64decode(compressed_b64_string))
@@ -572,7 +585,6 @@ def decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(compres
     except Exception as e:
         log.error(f"Encountered an error while trying to decompress and decode data: {e}")
         return None
-
 
 def safe_json_loads_func(json_string: str) -> dict:
     try:
@@ -583,39 +595,36 @@ def safe_json_loads_func(json_string: str) -> dict:
         loaded_json = dirtyjson.loads(json_string.replace('\\"', '"').replace('\/', '/').replace('\\n', ' '))
         return loaded_json
 
+def cast_numpy_types_for_serialization(obj):
+    for attr_name, attr_value in obj.__dict__.items():
+        if isinstance(attr_value, np.int64):
+            setattr(obj, attr_name, int(attr_value))
+    return obj
 
 async def parse_raw_dd_service_data_func(raw_dd_service_data: RawDDServiceData) -> ParsedDDServiceData:
     parsed_dd_service_data = ParsedDDServiceData()
     try:
         final_response = safe_json_loads_func(raw_dd_service_data.raw_dd_service_data_json)
     except Exception as e:
-        log.error(f'Error loading raw_dd_service_data_json: {e}')
-        return parsed_dd_service_data
+        log.error(f"Error loading raw_dd_service_data_json: {e}")
+        return cast_numpy_types_for_serialization(parsed_dd_service_data)
     final_response_df = pd.DataFrame.from_records([final_response])
     try:
-        rareness_scores_table_json = decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(final_response.get('rareness_scores_table_json_compressed_b64', ''))
-        rareness_scores_table_dict = safe_json_loads_func(rareness_scores_table_json)
-    except Exception as e:
-        log.error(f'Error processing rareness_scores_table_json: {e}')
-        return parsed_dd_service_data
-    top_10_most_similar_registered_images_on_pastel_file_hashes = list(rareness_scores_table_dict.get('image_hash', {}).values())
-    is_likely_dupe_list = list(rareness_scores_table_dict.get('is_likely_dupe', {}).values())
-    detected_dupes_from_registered_images_on_pastel_file_hashes = [x for idx, x in enumerate(top_10_most_similar_registered_images_on_pastel_file_hashes) if is_likely_dupe_list[idx]]
-    detected_dupes_from_registered_images_on_pastel_thumbnail_strings = [x[0][0] for idx, x in enumerate(list(rareness_scores_table_dict.get('thumbnail', {}).values())) if is_likely_dupe_list[idx]]
-    try:
         internet_rareness_json = final_response.get('internet_rareness', {})
-        internet_rareness_summary_table_json = decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(internet_rareness_json.get('rare_on_internet_summary_table_as_json_compressed_b64', ''))
+        internet_rareness_summary_table_json = decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(
+            internet_rareness_json.get('rare_on_internet_summary_table_as_json_compressed_b64', ''))
         internet_rareness_summary_table_dict = safe_json_loads_func(internet_rareness_summary_table_json)
     except Exception as e:
-        log.error(f'Error processing internet_rareness_summary_table_json: {e}')
-        return parsed_dd_service_data
+        log.error(f"Error processing internet_rareness_summary_table_json: {e}")
+        return cast_numpy_types_for_serialization(parsed_dd_service_data)
     internet_rareness_summary_table_df = pd.DataFrame.from_records(internet_rareness_summary_table_dict)
     try:
-        alternative_rare_on_internet_dict_as_json = decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(internet_rareness_json.get('alternative_rare_on_internet_dict_as_json_compressed_b64', ''))
+        alternative_rare_on_internet_dict_as_json = decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(
+            internet_rareness_json.get('alternative_rare_on_internet_dict_as_json_compressed_b64', ''))
         alternative_rare_on_internet_dict = safe_json_loads_func(alternative_rare_on_internet_dict_as_json)
     except Exception as e:
-        log.error(f'Error processing alternative_rare_on_internet_dict_as_json: {e}')
-        return parsed_dd_service_data
+        log.error(f"Error processing alternative_rare_on_internet_dict_as_json: {e}")
+        return cast_numpy_types_for_serialization(parsed_dd_service_data)
     alternative_rare_on_internet_dict_summary_table_df = pd.DataFrame.from_records(alternative_rare_on_internet_dict)
     try:
         parsed_dd_service_data.ticket_type = raw_dd_service_data.ticket_type
@@ -642,7 +651,7 @@ async def parse_raw_dd_service_data_func(raw_dd_service_data: RawDDServiceData) 
         parsed_dd_service_data.corresponding_pastel_blockchain_ticket_data = str(raw_dd_service_data.corresponding_pastel_blockchain_ticket_data)
     except Exception as e:
         log.error(f'Error filling in parsed_dd_service_data fields: {e}')
-        return parsed_dd_service_data
+        return cast_numpy_types_for_serialization(parsed_dd_service_data)
     try:
         parsed_dd_service_data.similarity_score_to_first_entry_in_collection = float(final_response_df.get('similarity_score_to_first_entry_in_collection', [None])[0])
         parsed_dd_service_data.cp_probability = float(final_response_df.get('cp_probability', [None])[0])
@@ -656,7 +665,7 @@ async def parse_raw_dd_service_data_func(raw_dd_service_data: RawDDServiceData) 
         parsed_dd_service_data.internet_rareness__earliest_available_date_of_internet_results = internet_rareness_json.get('earliest_available_date_of_internet_results', None)
     except Exception as e:
         log.error(f'Error filling in the next part of parsed_dd_service_data fields: {e}')
-        return parsed_dd_service_data
+        return cast_numpy_types_for_serialization(parsed_dd_service_data)
     try:
         parsed_dd_service_data.internet_rareness__b64_image_strings_of_in_page_matches = str(internet_rareness_summary_table_df.get('img_src_string', []).values.tolist())
         parsed_dd_service_data.internet_rareness__original_urls_of_in_page_matches = str(internet_rareness_summary_table_df.get('original_url', []).values.tolist())
@@ -671,109 +680,84 @@ async def parse_raw_dd_service_data_func(raw_dd_service_data: RawDDServiceData) 
         parsed_dd_service_data.alternative_rare_on_internet__alt_strings = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_image_alt_strings', []).values.tolist())
     except Exception as e:
         log.error(f'Error filling in the final part of parsed_dd_service_data fields: {e}')
-        return parsed_dd_service_data
-    return parsed_dd_service_data
-
+        return cast_numpy_types_for_serialization(parsed_dd_service_data)
+    return cast_numpy_types_for_serialization(parsed_dd_service_data)
 
 async def check_for_parsed_dd_service_result_in_db_func(txid: str) -> Tuple[Optional[ParsedDDServiceData], bool]:
     try:
         async with db_session.create_async_session() as session:
             query = select(ParsedDDServiceData).filter(ParsedDDServiceData.registration_ticket_txid == txid)
             result = await session.execute(query)
-        results_already_in_local_db = result.scalar_one_or_none()
-        is_cached_response = results_already_in_local_db is not None
-        return results_already_in_local_db, is_cached_response
+        parsed_data = result.scalar_one_or_none()
+        is_cached = parsed_data is not None
+        return parsed_data, is_cached
     except Exception as e:
-        log.error(f'Error checking for parsed_dd_service_result in local sqlite database: {e}')
-        
+        log.error(f'Error checking for parsed data in DB: {e}')
+        return None, False
 
-async def save_parsed_dd_service_data_to_db_func(parsed_dd_service_data):
+async def save_parsed_dd_service_data_to_db_func(parsed_data: ParsedDDServiceData):
     try:
-        await add_record_to_write_queue(parsed_dd_service_data)
+        await add_record_to_write_queue(parsed_data)
     except Exception as e:
-        log.error(f'Error saving parsed_dd_service_data to local sqlite database: {e}')
+        log.error(f'Error saving parsed data to DB: {e}')
 
+async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: str) -> Tuple[Optional[ParsedDDServiceData], bool]:
+    start_time = time.time()
+    parsed_data, is_cached = await check_for_parsed_dd_service_result_in_db_func(txid)
+    if is_cached:
+        return parsed_data, True
+    raw_data, _ = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid)
+    parsed_data = await parse_raw_dd_service_data_func(raw_data)
+    # Double-check to avoid race conditions
+    _, is_cached = await check_for_parsed_dd_service_result_in_db_func(txid)
+    if not is_cached:
+        await save_parsed_dd_service_data_to_db_func(parsed_data)
+        elapsed_time = round(time.time() - start_time, 2)
+        log.info(f'Parsed data generated and saved for txid {txid} in {elapsed_time}s.')
+    return parsed_data, False
 
-async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: str) -> ParsedDDServiceData:
-    try:    
-        start_time = time.time()
-        # First check if we already have the results in our local sqlite database; if so, then return them:
-        parsed_dd_service_data, is_cached_response = await check_for_parsed_dd_service_result_in_db_func(txid)
-        if is_cached_response:
-            return parsed_dd_service_data, is_cached_response
-        raw_dd_service_data, _ = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid) # If we don't have the results in our local sqlite database, then we need to download the raw DD-Service data, parse it:
-        parsed_dd_service_data = await parse_raw_dd_service_data_func(raw_dd_service_data)
-        _, is_cached_response = await check_for_parsed_dd_service_result_in_db_func(txid) # After parsing the data, check again if it does not exist in the database before saving:
-        if not is_cached_response:
-            await save_parsed_dd_service_data_to_db_func(parsed_dd_service_data)
-            log.info(f'Finished generating Parsed DD-Service data for ticket type {str(parsed_dd_service_data.ticket_type)} and txid {txid} and saving it to the local sqlite database! Took {round(time.time() - start_time, 2)} seconds in total.')
-        return parsed_dd_service_data, False
-    except Exception as e:
-        log.error(f'Error while executing `get_parsed_dd_service_results_by_registration_ticket_txid_func`: {e}')
-        
-        
-async def add_bad_txid_to_db_func(txid, type, reason):
-    try:
-        async with db_session.create_async_session() as session:
-            query = select(BadTXID).where(BadTXID.txid == txid)
-            result = await session.execute(query)
-            bad_txid_exists = result.scalars().first()
-            if bad_txid_exists is None:
-                new_bad_txid = BadTXID(txid=txid, ticket_type=type, reason_txid_is_bad=reason, failed_attempts=1,
-                                       next_attempt_time=datetime.utcnow() + timedelta(days=1))
-                await add_record_to_write_queue(new_bad_txid)
-            else:
-                bad_txid_exists.failed_attempts += 1  # If this txid is already marked as bad, increment the attempt count and set the next attempt time
-                if bad_txid_exists.failed_attempts == 2:
-                    bad_txid_exists.next_attempt_time = datetime.utcnow() + timedelta(days=3)
-                else:
-                    bad_txid_exists.next_attempt_time = datetime.utcnow() + timedelta(days=1)
-            await session.commit()
-            if bad_txid_exists is None:
-                log.info(f"No BadTXID object found with txid: {txid}, creating a new one...")
-            else:
-                log.info(f"Updated existing BadTXID object with txid: {txid}, incrementing failed attempts count.")
-    except Exception as e:
-        log.error(f"Error while adding bad txid to DB. Error: {e}")
-        raise
+async def add_bad_txid_to_db_func(session, txid, type, reason):
+    query = select(BadTXID).where(BadTXID.txid == txid).with_for_update()
+    result = await session.execute(query)
+    bad_txid_exists = result.scalars().first()
+    if bad_txid_exists is None:
+        new_bad_txid = BadTXID(txid=txid, ticket_type=type, reason_txid_is_bad=reason, failed_attempts=1,
+                               next_attempt_time=datetime.utcnow() + timedelta(days=1))
+        session.add(new_bad_txid)
+    else:
+        bad_txid_exists.failed_attempts += 1
+        if bad_txid_exists.failed_attempts == 2:
+            bad_txid_exists.next_attempt_time = datetime.utcnow() + timedelta(days=3)
+        else:
+            bad_txid_exists.next_attempt_time = datetime.utcnow() + timedelta(days=1)
+    await session.commit()
 
+async def get_bad_txids_from_db_func(session, type):
+    query = select(BadTXID).where(BadTXID.ticket_type == type, BadTXID.failed_attempts >= 1)
+    result = await session.execute(query)
+    bad_txids = result.scalars().all()
+    return [bad_tx.txid for bad_tx in bad_txids]
 
-async def get_bad_txids_from_db_func(type):
-    try:
-        async with db_session.create_async_session() as session:
-            # result = await session.execute(
-            #     select(BadTXID).where(BadTXID.ticket_type == type, BadTXID.failed_attempts >= 3,
-            #                           BadTXID.next_attempt_time < datetime.utcnow()))
-            result = await session.execute(select(BadTXID).where(BadTXID.ticket_type == type, BadTXID.failed_attempts >= 1))
-            bad_txids = result.scalars().all()
-        return [bad_tx.txid for bad_tx in bad_txids]
-    except Exception as e:
-        log.error(f"Error while getting bad txids from DB. Error: {e}")
-        raise
+async def check_bad_txid_exists(session, txid):
+    query = select(BadTXID).where(BadTXID.txid == txid).with_for_update()
+    result = await session.execute(query)
+    return result.scalars().first()
 
+async def update_bad_txid(session, bad_txid):
+    bad_txid.failed_attempts += 1
+    if bad_txid.failed_attempts == 3:
+        bad_txid.next_attempt_time = datetime.utcnow() + timedelta(days=3)
+    else:
+        bad_txid.next_attempt_time = datetime.utcnow() + timedelta(days=1)
+    await session.commit()
 
-async def check_and_update_cascade_ticket_bad_txid_func(txid: str, session):
-    try:
-        query = select(BadTXID).where(BadTXID.txid == txid)
-        result = await session.execute(query)
-        bad_txid_exists = result.scalars().first()
-        if bad_txid_exists:
-            log.info("Bad TXID exists.")
-            if datetime.utcnow() < bad_txid_exists.next_attempt_time:
-                return f"Error: txid {txid} is marked as bad and has not reached its next attempt time.", ""
-            else:
-                log.info("Incrementing failed attempts.")
-                bad_txid_exists.failed_attempts += 1
-                if bad_txid_exists.failed_attempts == 3:
-                    bad_txid_exists.next_attempt_time = datetime.utcnow() + timedelta(days=3)
-                else:
-                    bad_txid_exists.next_attempt_time = datetime.utcnow() + timedelta(days=1)
-                await session.commit()
-        return None
-    except Exception as e:
-        log.error(f"Error in check_and_update_cascade_ticket_bad_txid_func. Error: {e}")
-        raise
-
+async def check_and_update_cascade_ticket_bad_txid_func(session, txid):
+    bad_txid_exists = await check_bad_txid_exists(session, txid)
+    if bad_txid_exists:
+        if datetime.utcnow() < bad_txid_exists.next_attempt_time:
+            return f"Error: txid {txid} is marked as bad and has not reached its next attempt time.", ""
+        await update_bad_txid(session, bad_txid_exists)
+    return None
 
 async def startup_cascade_file_download_lock_cleanup_func():
     async with db_session.create_async_session() as session:
@@ -782,74 +766,85 @@ async def startup_cascade_file_download_lock_cleanup_func():
         stale_locks_query = select(CascadeCacheFileLocks).where(CascadeCacheFileLocks.lock_created_at < (current_time - lock_expiration_time))
         result = await session.execute(stale_locks_query)
         stale_locks = result.scalars().all()
-        log.info(f"Found {len(stale_locks)} stale cascade file download locks!")
         for lock in stale_locks:
             session.delete(lock)
         await session.commit()
-        log.info(f"Deleted {len(stale_locks)} stale cascade file download locks")
             
-            
+async def periodic_cascade_file_download_lock_cleanup_func():
+    while True:
+        await asyncio.sleep(600)  # Run every 10 minutes
+        await startup_cascade_file_download_lock_cleanup_func()
+
+async def acquire_cascade_file_lock(session, txid, lock_expiration_time):
+    current_time = datetime.utcnow()
+    lock = await session.get(CascadeCacheFileLocks, txid)
+    if lock and current_time - lock.lock_created_at < lock_expiration_time:
+        return False  # Lock exists and is not stale
+    retry_count = 0
+    max_retries = 5  # Choose an appropriate maximum number of retries
+    initial_delay = 0.1
+    backoff_factor = 2
+    while retry_count < max_retries:
+        try:
+            if lock:  # Lock is stale, update it
+                lock.lock_created_at = current_time
+            else:  # Lock does not exist, create it
+                lock = CascadeCacheFileLocks(txid=txid, lock_created_at=current_time)
+                session.add(lock)
+            await session.commit()
+            return True
+        except Exception as e:
+            log.error(f"Exception while attempting to acquire lock for txid {txid}: {e}")
+            retry_count += 1
+            backoff_time = min(60, initial_delay * (backoff_factor ** retry_count))  # 60 seconds max delay
+            await asyncio.sleep(backoff_time)
+    return False  # Return False if all retries fail
+
 async def delete_cascade_file_lock_func(session, txid: str):
     lock_exists = await session.get(CascadeCacheFileLocks, txid)
     if lock_exists:
         await session.delete(lock_exists)
         await session.commit()
-            
-            
+
 async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str):
-    lock_expiration_time = timedelta(minutes=10)  # Define cascade file download lock expiration time to be 10 minutes (this is so that we don't try to download the same file from multiple workers at the same time)
-    lock_exists = await session.get(CascadeCacheFileLocks, txid)
-    current_time = datetime.utcnow()
-    if lock_exists:
-        lock_age = current_time - lock_exists.lock_created_at
-        if lock_age < lock_expiration_time:
-            log.warning(f"Download of file {txid} is already in progress, skipping...")
-            return None, None
-        else: # Lock is considered stale, delete it
-            await session.delete(lock_exists)
-            await session.commit()
-            log.warning(f"Stale lock for file {txid} has been deleted...")
-    new_lock = CascadeCacheFileLocks(txid=txid, lock_created_at=current_time)
-    await add_record_to_write_queue(new_lock)
-    cache_file_path = None
-    decoded_response = None
+    lock_expiration_time = timedelta(minutes=10)
+    if not await acquire_cascade_file_lock(session, txid, lock_expiration_time):
+        log.warning(f"Download of file {txid} is already in progress, skipping...")
+        return None, None
+    cache_file_path, decoded_response = None, None
     try:
         async with httpx.AsyncClient() as client:
             async with client.stream('GET', request_url, headers=headers, timeout=600.0) as response:
-                body = await response.aread()  # async read
-                parsed_response = json.loads(body.decode())  # parse JSON
-        if 'name' in parsed_response.keys():
-            if parsed_response.get('name') == 'InternalServerError':
-                error_message = parsed_response.get('message')
-                log.error(f"An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {error_message}; Deleting the lock and returning...")
-                await delete_cascade_file_lock_func(session, txid)
-                return f"Error encounterd while downloading cascade file for txid {txid}: {error_message}", None
+                body = await response.aread()
+                parsed_response = json.loads(body.decode())
+        if parsed_response.get('name') == 'InternalServerError':
+            log.error(f"Server error during download: {parsed_response.get('message')}")
+            await delete_cascade_file_lock_func(session, txid)
+            return f"Server error: {parsed_response.get('message')}", None
         if 'file_id' in parsed_response.keys():
             file_identifier = parsed_response['file_id']
             file_download_url = f"http://localhost:8080/files/{file_identifier}"
             async with httpx.AsyncClient() as client:
                 async with client.stream('GET', file_download_url, headers=headers, timeout=500.0) as response:
-                    decoded_response = await response.aread()  # async read
+                    decoded_response = await response.aread()
             cache_file_path = os.path.join(cache_dir, txid)
             async with aiofiles.open(cache_file_path, mode='wb') as f:
                 await f.write(decoded_response)
         else:
-            log.error(f"Response from Cascade API for txid {txid} did not contain a file_id! Deleting the lock and returning...")
+            log.error("Response did not contain a file_id.")
             await delete_cascade_file_lock_func(session, txid)
-            return f"Error encounterd while downloading cascade file for txid {txid}: {error_message}", None          
+            return "No file_id in response.", None
     except Exception as e:
-        log.error(f'An error occurred while downloading the file from Cascade API for txid {txid}! Error message: {e}; Deleting the lock and returning...')
+        log.error(f'Exception during download: {e}')
         await delete_cascade_file_lock_func(session, txid)
-        await add_bad_txid_to_db_func(txid, 'cascade', str(e))
-        return f"Error: An exception occurred while downloading the file. The txid {txid} has been marked as bad (it must be marked 3 times as bad before it will be skipped over in the future).", ""
+        await add_bad_txid_to_db_func(session, txid, 'cascade', str(e))
+        return f"Exception occurred: {e}", None
     return cache_file_path, decoded_response
-
 
 async def check_and_manage_cascade_file_cache_func(txid: str, cache_file_path: str, decoded_response):
     cache[txid] = cache_file_path  # Update LRU cache
     log.info(f'Successfully decoded response from Cascade API for txid {txid}!')
     return decoded_response
-
 
 async def get_cascade_original_file_metadata_func(txid: str):
     try:
@@ -874,7 +869,6 @@ async def get_cascade_original_file_metadata_func(txid: str):
         await add_bad_txid_to_db_func(txid, 'cascade', str(e))
         return str(txid), False
 
-
 async def verify_downloaded_cascade_file_func(file_data, expected_hash, expected_size, expected_mime_type):
     try:
         sha3_256 = hashlib.sha3_256(file_data).hexdigest()
@@ -898,7 +892,6 @@ async def verify_downloaded_cascade_file_func(file_data, expected_hash, expected
         error_msg = f'An unexpected error occurred during file verification: {e}'
         log.error(error_msg)
         return error_msg
-    
 
 async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str, use_cascade_file_cache: bool = True):
     global cache
@@ -954,40 +947,75 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
         log.error(f'An unexpected error occurred during download process for txid {txid}. Error: {e}')
         raise
 
-
-async def populate_database_with_all_dd_service_data_func():
-    tickets_obj = await get_all_pastel_blockchain_tickets_func()
+async def filter_tickets_to_dataframes(tickets_obj):
     sense_ticket_dict = json.loads(tickets_obj['action'])
     sense_ticket_df = pd.DataFrame(sense_ticket_dict).T
     sense_ticket_df_filtered = sense_ticket_df[sense_ticket_df['action_type'] == 'sense'].drop_duplicates(subset=['txid'])
     nft_ticket_dict = json.loads(tickets_obj['nft'])
     nft_ticket_df = pd.DataFrame(nft_ticket_dict).T
     nft_ticket_df_filtered = nft_ticket_df.drop_duplicates(subset=['txid'])
-    list_of_sense_registration_ticket_txids = sense_ticket_df_filtered['txid'].values.tolist()
-    list_of_nft_registration_ticket_txids = nft_ticket_df_filtered['txid'].values.tolist()
-    list_of_combined_registration_ticket_txids = list_of_sense_registration_ticket_txids + list_of_nft_registration_ticket_txids
-    random.shuffle(list_of_combined_registration_ticket_txids)
+    return sense_ticket_df_filtered, nft_ticket_df_filtered
+
+def shuffle_and_combine_txids(sense_ticket_df, nft_ticket_df):
+    sense_txids = sense_ticket_df['txid'].values.tolist()
+    nft_txids = nft_ticket_df['txid'].values.tolist()
+    combined_txids = sense_txids + nft_txids
+    random.shuffle(combined_txids)
+    return combined_txids
+
+async def get_ticket_height(txid):
+    ticket_data = await get_pastel_blockchain_ticket_func(txid)
+    return ticket_data['height']
+
+async def should_skip_txid(txid, is_nft_ticket, min_height_for_nft, min_height_for_sense):
+    if is_nft_ticket and await get_ticket_height(txid) <= min_height_for_nft:
+        return True
+    if not is_nft_ticket and await get_ticket_height(txid) <= min_height_for_sense:
+        return True
+    return False
+
+async def populate_database_with_all_dd_service_data_func():
+    try:
+        tickets_obj = await get_all_pastel_blockchain_tickets_func()
+        sense_ticket_df, nft_ticket_df = await filter_tickets_to_dataframes(tickets_obj)
+    except JSONRPCException as e:
+        log.error(f"JSONRPC error: {str(e)}")
+        return
+    except json.JSONDecodeError as e:
+        log.error(f"JSON Decode Error: {str(e)}")
+        return
+    except asyncio.TimeoutError:
+        log.error("Timeout while fetching tickets.")
+        return
+    except Exception as e:
+        log.error(f"Unexpected error: {str(e)}")
+        return
+    combined_txids = shuffle_and_combine_txids(sense_ticket_df, nft_ticket_df)
     random_delay_in_seconds = random.randint(1, 15)
     await asyncio.sleep(random_delay_in_seconds)
-    for current_txid in list_of_combined_registration_ticket_txids:
-        try: # Before fetching, check if the current txid is already marked as bad
-            is_nft_ticket = current_txid in list_of_nft_registration_ticket_txids
-            ticket_type = 'nft' if is_nft_ticket else 'sense'
-            bad_txids = await get_bad_txids_from_db_func(ticket_type)
-            if current_txid in bad_txids: # If it is bad and has not reached its next attempt time, skip it
-                continue
-            corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(current_txid)
-            minimum_testnet_height_for_nft_tickets = 290000
-            if is_nft_ticket and corresponding_pastel_blockchain_ticket_data['height'] <= minimum_testnet_height_for_nft_tickets:
-                continue
-            minimum_testnet_height_for_sense_tickets = 300000
-            if not is_nft_ticket and corresponding_pastel_blockchain_ticket_data['height'] <= minimum_testnet_height_for_sense_tickets:
-                continue            
-            current_dd_service_data, is_cached_response = await get_parsed_dd_service_results_by_registration_ticket_txid_func(current_txid)
-        except Exception as e:
-            await add_bad_txid_to_db_func(current_txid, ticket_type, str(e))
-            pass
-
+    async with db_session.create_async_session() as session:
+        for txid in combined_txids:
+            try:
+                is_nft_ticket = txid in nft_ticket_df['txid'].values.tolist()
+                ticket_type = 'nft' if is_nft_ticket else 'sense'
+                if txid in await get_bad_txids_from_db_func(ticket_type):
+                    continue
+                if await should_skip_txid(txid, is_nft_ticket, 290000, 300000):
+                    continue
+                data, is_cached = await get_parsed_dd_service_results_by_registration_ticket_txid_func(txid)
+            except JSONRPCException as e:
+                await add_bad_txid_to_db_func(session, txid, ticket_type, str(e))
+                log.error(f"JSONRPC error while processing txid {txid}: {str(e)}")
+            except asyncio.TimeoutError:
+                log.error(f"Async TimeoutError while processing txid {txid}")
+            except OperationalError:
+                log.error(f"Database operational error while processing txid {txid}")
+            except IntegrityError:
+                log.error(f"Database integrity error while processing txid {txid}")
+            except DBAPIError:
+                log.error(f"Database API error while processing txid {txid}")
+            except Exception as e:
+                log.error(f"Unexpected error while processing txid {txid}: {str(e)}")
 
 def print_dict_structure(d, indent=0):
     for key, value in d.items():
@@ -1029,13 +1057,11 @@ async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
 
 async def get_random_cascade_txids_func(n: int) -> List[str]:
     try:
-        # min_blockheight_for_ticket = 324550
         log.info(f'Attempting to get {n} random cascade TXIDs...')
         tickets_obj = await get_all_pastel_blockchain_tickets_func()
         cascade_ticket_dict = json.loads(tickets_obj['action'])
         cascade_ticket_dict_df = pd.DataFrame(cascade_ticket_dict).T
         cascade_ticket_dict_df_filtered = cascade_ticket_dict_df[cascade_ticket_dict_df['action_type'] == 'cascade'].drop_duplicates(subset=['txid'])
-        # cascade_ticket_dict_df_filtered = cascade_ticket_dict_df_filtered[cascade_ticket_dict_df_filtered['height'] >= min_blockheight_for_ticket]
         txids = cascade_ticket_dict_df_filtered['txid'].tolist()
         if n < 10:
             txids_sample = random.sample(txids, min(6*n, len(txids))) # Sample 6n TXIDs to increase the chance of getting enough public ones.
@@ -1109,8 +1135,6 @@ def parse_walletnode_log_data_func(log_data):
     txid_pattern = r'txid=(\w+)'
     downloaded_pattern = r'Downloaded from supernode address=(.*?)\s'
     parsed_data = []
-    log_indices = {}
-    downloaded_parts = {}
     supernode_ips_dict = {}  # Changed from a set to a dictionary
     current_index = {}  # Stores the current index for each txid
     current_year = datetime.utcnow().year
@@ -1194,7 +1218,6 @@ async def update_cascade_status_periodically_func(df: pd.DataFrame):
     except asyncio.exceptions.CancelledError:
         log.info('The status update task was cancelled.')
     return df, txid_log_dict, supernode_ips_dict
-
 
 
 async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading):
@@ -1307,7 +1330,6 @@ async def bulk_test_cascade_func(n: int):
     try:
         datetime_test_started = datetime.utcnow()
         log.info('Starting bulk test of cascade...')
-        status_df = pd.DataFrame()
         txids = await get_random_cascade_txids_func(n)
         log.info(f'Got {len(txids)} txids for testing.')
         seconds_to_wait_for_all_files_to_finish_downloading = 500
@@ -1485,10 +1507,11 @@ async def get_all_registration_ticket_txids_corresponding_to_a_collection_ticket
     elif item_type == '':
         try:
             response_json = await rpc_connection.tickets('find', 'action', activation_ticket_txid )
-        except:
+        except Exception as e:
+            log.error(f'Exception occurred while trying to find the activation ticket in the blockchain: {e}')
             try:
                 response_json = await rpc_connection.tickets('find', 'nft', activation_ticket_txid )
-            except:
+            except Exception as e:
                 response_json = 'Unable to find the activation ticket in the blockchain'
     else:
         response_json = f'The txid given ({collection_ticket_txid}) is not a valid activation ticket txid for a collection ticket'
@@ -1502,7 +1525,6 @@ async def get_current_total_number_and_size_and_average_size_of_registered_casca
     cascade_ticket_df_filtered = cascade_ticket_df[cascade_ticket_df['action_type'] == 'cascade'].drop_duplicates(subset=['txid'])
     list_of_cascade_registration_ticket_txids = cascade_ticket_df_filtered['txid'].values.tolist()
     list_of_cascade_action_tickets = cascade_ticket_df_filtered['action_ticket'].values.tolist()
-    list_of_known_bad_cascade_txids_to_skip = []
     file_counter = 0
     data_size_bytes_counter = 0
     publicly_accessible_files = 0
@@ -1547,146 +1569,6 @@ async def get_current_total_number_and_size_and_average_size_of_registered_casca
     return response
 
 
-async def parse_and_store_transaction(txid: str, block_height: int, session):
-    try:
-        # Retrieve raw transaction data
-        raw_transaction_data = await rpc_connection.getrawtransaction(txid, 1)
-        # Create a PastelTransactionData object
-        transaction = PastelTransactionData(transaction_id=txid)
-        # Parse inputs
-        for vin in raw_transaction_data['vin']:
-            # Create a PastelTransactionInputData object and add to transaction inputs
-            input_data = PastelTransactionInputData(
-                transaction_id=txid,
-                previous_output_id=vin['vout']
-            )
-            transaction.inputs.append(input_data)
-        # Parse outputs
-        for vout in raw_transaction_data['vout']:
-            # Create a PastelTransactionOutputData object and add to transaction outputs
-            output_data = PastelTransactionOutputData(
-                transaction_id=txid,
-                amount=vout['value'],
-                pastel_address=vout['scriptPubKey']['addresses'][0]
-            )
-            transaction.outputs.append(output_data)
-            # Update address balance
-            address_data = session.query(PastelAddressData).filter_by(pastel_address=output_data.pastel_address).one_or_none()
-            if address_data:
-                address_data.balance += output_data.amount
-            else:
-                address_data = PastelAddressData(pastel_address=output_data.pastel_address, balance=output_data.amount)
-                session.add(address_data)
-        # Store the transaction data in the database
-        session.add(transaction)
-        await session.flush()
-        # Update the number of confirmations for the transaction
-        current_block_height = await rpc_connection.getblockcount()
-        transaction.confirmations = current_block_height - block_height + 1
-    except Exception as e:
-        log.error(f"Error while processing transaction {txid}: {e}")
-
-
-async def parse_and_store_block(block_hash: str, session):
-    try:
-        # Retrieve block data
-        block_data = await rpc_connection.getblock(block_hash)
-        # Create a PastelBlockData object
-        block = PastelBlockData(
-            block_hash=block_hash,
-            block_height=block_data['height'],
-            previous_block_hash=block_data['previousblockhash'],
-            timestamp=datetime.fromtimestamp(block_data['time'])
-        )
-        # Parse transactions in the block
-        for txid in block_data['tx']:
-            # Parse and store transaction data
-            await parse_and_store_transaction(txid, block_data['height'], session)
-        # Store the block data in the database
-        session.add(block)
-        await session.flush()
-    except Exception as e:
-        log.error(f"Error while processing block {block_hash}: {e}")
-
-
-async def handle_block_reorganization(new_block_hash: str, session):
-    # Get the latest block from the database
-    last_block_query = select(PastelBlockData).order_by(PastelBlockData.block_height.desc())
-    last_block_result = await session.execute(last_block_query)
-    last_block = last_block_result.scalar_one_or_none()
-    # Check for reorganization
-    if last_block.block_hash != new_block_hash:
-        # Handle reorganization: reverse changes and rescan affected blocks
-        # Find common ancestor block
-        new_block = await session.get(PastelBlockData, new_block_hash)
-        old_block = last_block
-        while old_block.block_hash != new_block.block_hash:
-            if old_block is None or new_block is None:
-                # Handle the case where there is no common ancestor block
-                log.error("Could not find a common ancestor block during reorganization")
-                return
-            if old_block.block_height > new_block.block_height:
-                old_block = await session.get(PastelBlockData, old_block.previous_block_hash)
-            elif old_block.block_height < new_block.block_height:
-                new_block = await session.get(PastelBlockData, new_block.previous_block_hash)
-            else:
-                old_block = await session.get(PastelBlockData, old_block.previous_block_hash)
-                new_block = await session.get(PastelBlockData, new_block.previous_block_hash)
-        # Delete orphaned blocks and associated transactions, inputs, and outputs
-        OrphanedBlock = aliased(PastelBlockData)
-        orphaned_blocks_query = select(OrphanedBlock).filter(OrphanedBlock.block_height > old_block.block_height)
-        orphaned_blocks = await session.execute(orphaned_blocks_query)
-        for orphaned_block in orphaned_blocks.scalars():
-            session.delete(orphaned_block)
-        # Rescan and add new blocks
-        await parse_and_store_block(new_block_hash, session)
-        # Commit changes to the database
-        await session.commit()
-        # Notify of blockchain reorganization
-        NotificationSystem.notify('reorganization', {'new_block_hash': new_block_hash})
-
-
-async def scan_new_blocks():
-    global rpc_connection
-    async with db_session.create_async_session() as session:
-        try:
-            # Get the current block height
-            current_block_height = await rpc_connection.getblockcount()
-            # Get the latest block height stored in the database
-            last_block_query = select(PastelBlockData).order_by(PastelBlockData.block_height.desc())
-            last_block_result = await session.execute(last_block_query)
-            last_block = last_block_result.scalar_one_or_none()
-            last_block_height = last_block.block_height if last_block else 0
-            # Check for blockchain reorganization
-            if last_block:
-                await handle_block_reorganization(await rpc_connection.getblockhash(last_block_height), session)
-            # Optimized block scanning
-            while last_block_height < current_block_height:
-                # Determine batch size for scanning
-                scan_batch_size = min(BLOCK_SCAN_BATCH_SIZE, current_block_height - last_block_height)
-                # Scan new blocks in batches
-                for block_height in range(last_block_height + 1, last_block_height + scan_batch_size + 1):
-                    # Get the block hash
-                    block_hash = await rpc_connection.getblockhash(block_height)
-                    # Parse and store block data
-                    await parse_and_store_block(block_hash, session)
-                # Commit changes to the database
-                await session.commit()
-                # Update last block height
-                last_block_height += scan_batch_size
-                # Notify of progress
-                log.info(f"Successfully scanned and updated blocks {last_block_height - scan_batch_size + 1} to {last_block_height}")
-        except Exception as e:
-            log.error(f"Error while scanning new blocks: {e}")
-            # Optionally, handle rollback in case of error
-            await session.rollback()
-            
-
-async def run_scan_new_blocks_func(background_tasks: BackgroundTasks = Depends):
-    background_tasks.add_task(await scan_new_blocks())
-    return {"message": 'Started background task to scan all blocks...'}            
-    
-    
 #Misc helper functions:
 class MyTimer():
     def __init__(self):
@@ -1742,27 +1624,28 @@ def check_if_pasteld_is_running_correctly_and_relaunch_if_required_func():
     pasteld_running_correctly = 0
     try:
         current_pastel_block_number = get_current_pastel_block_height_func()
-    except:
-        log.error('Problem running pastel-cli command!')
+    except Exception as e:
+        log.error(f"Problem running pastel-cli command: {e}")
         current_pastel_block_number = ''
     if isinstance(current_pastel_block_number, int):
         if current_pastel_block_number > 100000:
             pasteld_running_correctly = 1
             log.info('Pasteld is running correctly!')
     if pasteld_running_correctly == 0:
+        log.info('Pasteld was not running correctly, trying to restart it...')
         process_output = os.system("cd /home/pastelup/ && tmux new -d ./pastelup start walletnode --development-mode")
+        log.info('Pasteld restart command output: ' + str(process_output))
     return pasteld_running_correctly
 
 
 def install_pasteld_func(network_name='testnet'):
-    install_pastelup_script_command_string = f"mkdir ~/pastelup && cd ~/pastelup && wget https://github.com/pastelnetwork/pastelup/releases/download/v1.1.3/pastelup-linux-amd64 && mv pastelup-linux-amd64 pastelup && chmod 755 pastelup"
+    install_pastelup_script_command_string = "mkdir ~/pastelup && cd ~/pastelup && wget https://github.com/pastelnetwork/pastelup/releases/download/v1.1.3/pastelup-linux-amd64 && mv pastelup-linux-amd64 pastelup && chmod 755 pastelup"
     command_string = f"cd ~/pastelup && ./pastelup install walletnode -n={network_name} --force -r=latest -p=18.118.218.206,18.116.26.219 && \
                         sed -i -e '/hostname/s/localhost/0.0.0.0/' ~/.pastel/walletnode.yml && \
                         sed -i -e '$arpcbind=0.0.0.0' ~/.pastel/pastel.conf && \
                         sed -i -e '$arpcallowip=172.0.0.0/8' ~/.pastel/pastel.conf && \
                         sed -i -e 's/rpcuser=.*/rpcuser=rpc_user/' ~/.pastel/pastel.conf && \
                         sed -i -e 's/rpcpassword=.*/rpcpassword=rpc_pwd/' ~/.pastel/pastel.conf"
-    #check if pastelup is already installed:
     if os.path.exists('~/pastelup/pastelup'):
         log.info('Pastelup is already installed!')
         log.info('Running pastelup install command...')
@@ -1770,8 +1653,8 @@ def install_pasteld_func(network_name='testnet'):
             command_result = os.system(command_string)
             if not command_result:
                 log.info('Pastelup install command appears to have run successfully!')
-        except:
-            log.error('Error running pastelup install command! Message: ' + str(command_result))
+        except Exception as e:
+            log.error(f"Error running pastelup install command! Message: {e}; Command result: {command_result}")
     else:
         log.info('Pastelup is not installed, trying to install it...')
         try:
@@ -1781,9 +1664,9 @@ def install_pasteld_func(network_name='testnet'):
                 log.info('Running pastelup install command...')
                 command_result = os.system(command_string)
             else:
-                log.info('Pastelup installation failed! Message: ' + str(install_result))
-        except:
-            log.error('Error running pastelup install command! Message: ' + str(install_result))
+                log.info(f"Pastelup installation failed! Message: {install_result}") 
+        except Exception as e:
+            log.error(f"Error running pastelup install command! Message: {e}; Command result: {install_result}")
     return
             
 #_______________________________________________________________________________________________________________________________
