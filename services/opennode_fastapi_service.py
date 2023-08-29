@@ -562,7 +562,6 @@ async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str)
         if raw_dd_service_data:
             log.info(f"Data found in local cache for txid {txid}.")
             return raw_dd_service_data, True
-        log.info(f"Data not found in local cache for txid {txid}, fetching from API.")
         corresponding_pastel_blockchain_ticket_data = await get_pastel_blockchain_ticket_func(txid)
         ticket = corresponding_pastel_blockchain_ticket_data.get('ticket', {})
         if 'nft_ticket' in ticket:
@@ -809,7 +808,6 @@ async def delete_cascade_file_lock_func(session, txid: str):
 async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str):
     lock_expiration_time = timedelta(minutes=10)
     if not await acquire_cascade_file_lock(session, txid, lock_expiration_time):
-        log.warning(f"Download of file {txid} is already in progress, skipping...")
         return None, None
     cache_file_path, decoded_response = None, None
     try:
@@ -998,7 +996,7 @@ async def populate_database_with_all_dd_service_data_func():
             try:
                 is_nft_ticket = txid in nft_ticket_df['txid'].values.tolist()
                 ticket_type = 'nft' if is_nft_ticket else 'sense'
-                if txid in await get_bad_txids_from_db_func(ticket_type):
+                if txid in await get_bad_txids_from_db_func(session, ticket_type):
                     continue
                 if await should_skip_txid(txid, is_nft_ticket, 290000, 300000):
                     continue
