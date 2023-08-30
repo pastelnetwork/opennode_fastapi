@@ -602,6 +602,7 @@ def cast_numpy_types_for_serialization(obj):
 
 async def parse_raw_dd_service_data_func(raw_dd_service_data: RawDDServiceData) -> ParsedDDServiceData:
     parsed_dd_service_data = ParsedDDServiceData()
+    parsed_dd_service_data.ticket_type = raw_dd_service_data.ticket_type
     try:
         final_response = safe_json_loads_func(raw_dd_service_data.raw_dd_service_data_json)
     except Exception as e:
@@ -613,20 +614,21 @@ async def parse_raw_dd_service_data_func(raw_dd_service_data: RawDDServiceData) 
         internet_rareness_summary_table_json = decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(
             internet_rareness_json.get('rare_on_internet_summary_table_as_json_compressed_b64', ''))
         internet_rareness_summary_table_dict = safe_json_loads_func(internet_rareness_summary_table_json)
+        internet_rareness_summary_table_df = pd.DataFrame.from_records(internet_rareness_summary_table_dict)
+        skip_internet_rareness = False
     except Exception as e:
         log.error(f"Error processing internet_rareness_summary_table_json: {e}")
-        return cast_numpy_types_for_serialization(parsed_dd_service_data)
-    internet_rareness_summary_table_df = pd.DataFrame.from_records(internet_rareness_summary_table_dict)
+        skip_internet_rareness = True
     try:
         alternative_rare_on_internet_dict_as_json = decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(
             internet_rareness_json.get('alternative_rare_on_internet_dict_as_json_compressed_b64', ''))
         alternative_rare_on_internet_dict = safe_json_loads_func(alternative_rare_on_internet_dict_as_json)
+        alternative_rare_on_internet_dict_summary_table_df = pd.DataFrame.from_records(alternative_rare_on_internet_dict)
+        skip_alternative_rare_on_internet = False
     except Exception as e:
         log.error(f"Error processing alternative_rare_on_internet_dict_as_json: {e}")
-        return cast_numpy_types_for_serialization(parsed_dd_service_data)
-    alternative_rare_on_internet_dict_summary_table_df = pd.DataFrame.from_records(alternative_rare_on_internet_dict)
+        skip_alternative_rare_on_internet = True
     try:
-        parsed_dd_service_data.ticket_type = raw_dd_service_data.ticket_type
         parsed_dd_service_data.registration_ticket_txid = raw_dd_service_data.registration_ticket_txid
         parsed_dd_service_data.hash_of_candidate_image_file = final_response_df.get('hash_of_candidate_image_file', [None])[0]
         parsed_dd_service_data.pastel_id_of_submitter = final_response_df.get('pastel_id_of_submitter', [None])[0]
@@ -666,17 +668,32 @@ async def parse_raw_dd_service_data_func(raw_dd_service_data: RawDDServiceData) 
         log.error(f'Error filling in the next part of parsed_dd_service_data fields: {e}')
         return cast_numpy_types_for_serialization(parsed_dd_service_data)
     try:
-        parsed_dd_service_data.internet_rareness__b64_image_strings_of_in_page_matches = str(internet_rareness_summary_table_df.get('img_src_string', []).values.tolist())
-        parsed_dd_service_data.internet_rareness__original_urls_of_in_page_matches = str(internet_rareness_summary_table_df.get('original_url', []).values.tolist())
-        parsed_dd_service_data.internet_rareness__result_titles_of_in_page_matches = str(internet_rareness_summary_table_df.get('title', []).values.tolist())
-        parsed_dd_service_data.internet_rareness__date_strings_of_in_page_matches = str(internet_rareness_summary_table_df.get('date_string', []).values.tolist())
-        parsed_dd_service_data.internet_rareness__misc_related_images_as_b64_strings =  str(internet_rareness_summary_table_df.get('misc_related_image_as_b64_string', []).values.tolist())
-        parsed_dd_service_data.internet_rareness__misc_related_images_url = str(internet_rareness_summary_table_df.get('misc_related_image_url', []).values.tolist())
-        parsed_dd_service_data.alternative_rare_on_internet__number_of_similar_results = str(len(alternative_rare_on_internet_dict_summary_table_df))
-        parsed_dd_service_data.alternative_rare_on_internet__b64_image_strings = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_images_as_base64', []).values.tolist())
-        parsed_dd_service_data.alternative_rare_on_internet__original_urls = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_href_strings', []).values.tolist())
-        parsed_dd_service_data.alternative_rare_on_internet__google_cache_urls = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_image_src_strings', []).values.tolist())
-        parsed_dd_service_data.alternative_rare_on_internet__alt_strings = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_image_alt_strings', []).values.tolist())
+        if not skip_internet_rareness:
+            parsed_dd_service_data.internet_rareness__b64_image_strings_of_in_page_matches = str(internet_rareness_summary_table_df.get('img_src_string', []).values.tolist())
+            parsed_dd_service_data.internet_rareness__original_urls_of_in_page_matches = str(internet_rareness_summary_table_df.get('original_url', []).values.tolist())
+            parsed_dd_service_data.internet_rareness__result_titles_of_in_page_matches = str(internet_rareness_summary_table_df.get('title', []).values.tolist())
+            parsed_dd_service_data.internet_rareness__date_strings_of_in_page_matches = str(internet_rareness_summary_table_df.get('date_string', []).values.tolist())
+            parsed_dd_service_data.internet_rareness__misc_related_images_as_b64_strings =  str(internet_rareness_summary_table_df.get('misc_related_image_as_b64_string', []).values.tolist())
+            parsed_dd_service_data.internet_rareness__misc_related_images_url = str(internet_rareness_summary_table_df.get('misc_related_image_url', []).values.tolist())
+        else:
+            parsed_dd_service_data.internet_rareness__b64_image_strings_of_in_page_matches = '[]'
+            parsed_dd_service_data.internet_rareness__original_urls_of_in_page_matches = '[]'
+            parsed_dd_service_data.internet_rareness__result_titles_of_in_page_matches = '[]'
+            parsed_dd_service_data.internet_rareness__date_strings_of_in_page_matches = '[]'
+            parsed_dd_service_data.internet_rareness__misc_related_images_as_b64_strings = '[]'
+            parsed_dd_service_data.internet_rareness__misc_related_images_url = '[]'
+        if not skip_alternative_rare_on_internet:            
+            parsed_dd_service_data.alternative_rare_on_internet__number_of_similar_results = str(len(alternative_rare_on_internet_dict_summary_table_df))
+            parsed_dd_service_data.alternative_rare_on_internet__b64_image_strings = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_images_as_base64', []).values.tolist())
+            parsed_dd_service_data.alternative_rare_on_internet__original_urls = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_href_strings', []).values.tolist())
+            parsed_dd_service_data.alternative_rare_on_internet__google_cache_urls = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_image_src_strings', []).values.tolist())
+            parsed_dd_service_data.alternative_rare_on_internet__alt_strings = str(alternative_rare_on_internet_dict_summary_table_df.get('list_of_image_alt_strings', []).values.tolist())
+        else:
+            parsed_dd_service_data.alternative_rare_on_internet__number_of_similar_results = '0'
+            parsed_dd_service_data.alternative_rare_on_internet__b64_image_strings = '[]'
+            parsed_dd_service_data.alternative_rare_on_internet__original_urls = '[]'
+            parsed_dd_service_data.alternative_rare_on_internet__google_cache_urls = '[]'
+            parsed_dd_service_data.alternative_rare_on_internet__alt_strings = '[]'
     except Exception as e:
         log.error(f'Error filling in the final part of parsed_dd_service_data fields: {e}')
         return cast_numpy_types_for_serialization(parsed_dd_service_data)
