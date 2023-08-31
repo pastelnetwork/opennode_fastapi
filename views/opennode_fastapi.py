@@ -261,7 +261,7 @@ async def verify_message_with_pastelid(pastelid_pubkey: str, message_to_verify: 
 #Endpoint to respond with a PastelID file, given a desired password:
 @router.get('/testnet_pastelid_file_dispenser/{desired_password}', tags=["High-Level Methods"])
 async def testnet_pastelid_file_dispenser(desired_password: str):
-    pastelid_pubkey, pastelid_data = handle_exceptions(service_funcs.testnet_pastelid_file_dispenser_func, desired_password)
+    pastelid_pubkey, pastelid_data = await handle_exceptions(service_funcs.testnet_pastelid_file_dispenser_func, desired_password)
     response = StreamingResponse([pastelid_data], media_type="application/binary")
     response.headers["Content-Disposition"] = f"attachment; filename=ticket.{pastelid_pubkey}"
     return response
@@ -276,9 +276,12 @@ async def get_raw_dd_service_results_by_registration_ticket_txid(txid: str):
 
 @router.get('/get_publicly_accessible_cascade_file_by_registration_ticket_txid/{txid}', tags=["OpenAPI Methods"])
 async def get_publicly_accessible_cascade_file_by_registration_ticket_txid(txid: str):
-    decoded_response, original_file_name_string = handle_exceptions(service_funcs.download_publicly_accessible_cascade_file_by_registration_ticket_txid_func, txid)
-    content_disposition_string = f"attachment; filename={original_file_name_string}"
-    return StreamingResponse(io.BytesIO(decoded_response), media_type="application/octet-stream", headers={"Content-Disposition": content_disposition_string})
+    decoded_response, original_file_name_string = await handle_exceptions(service_funcs.download_publicly_accessible_cascade_file_by_registration_ticket_txid_func, txid)
+    if isinstance(decoded_response, bytes):
+        content_disposition_string = f"attachment; filename={original_file_name_string}"
+        return StreamingResponse(io.BytesIO(decoded_response), media_type="application/octet-stream", headers={"Content-Disposition": content_disposition_string})
+    else: #Handle error case (generally if the file is not publicly accessible)
+        return JSONResponse(content={"message": decoded_response}, status_code=400)
 
 @router.get('/get_parsed_dd_service_results_by_image_file_hash/{image_file_hash}', tags=["OpenAPI Methods"])
 async def get_parsed_dd_service_results_by_image_file_hash(image_file_hash: str):
@@ -317,7 +320,7 @@ async def get_current_total_number_and_size_and_average_size_of_registered_casca
 
 @router.get('/get_usernames_from_pastelid/{pastelid}', tags=["OpenAPI Methods"])
 async def get_usernames_from_pastelid(pastelid : str):
-    response = handle_exceptions(service_funcs.get_usernames_from_pastelid_func, pastelid)
+    response = await handle_exceptions(service_funcs.get_usernames_from_pastelid_func, pastelid)
     return JSONResponse(content={"pastelid_query": pastelid, "matching_usernames": response})
 
 @router.get('/get_all_registration_ticket_txids_corresponding_to_a_collection_ticket_txid/{collection_ticket_txid}', tags=["OpenAPI Methods"])
@@ -326,7 +329,7 @@ async def get_all_registration_ticket_txids_corresponding_to_a_collection_ticket
 
 @router.get('/get_pastelid_from_username/{username}', tags=["OpenAPI Methods"])
 async def get_pastelid_from_username(username : str):
-    response = handle_exceptions(service_funcs.get_pastelid_from_username_func, username)
+    response = await handle_exceptions(service_funcs.get_pastelid_from_username_func, username)
     return JSONResponse(content={"username_query": username, "matching_pastelid": response})
 
 @router.get('/populate_database_with_all_dd_service_data', tags=["OpenAPI Methods"])
