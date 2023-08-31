@@ -13,6 +13,7 @@ import statistics
 import subprocess
 import time
 import warnings
+import traceback
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
@@ -484,7 +485,7 @@ async def acquire_dd_service_lock(session, txid, lock_expiration_time):
             await session.commit()
             return True
         except Exception as e:
-            log.error(f"An exception occurred while attempting to acquire a DD service lock for txid {txid}: {e}")
+            # log.error(f"An exception occurred while attempting to acquire a DD service lock for txid {txid}: {e}")
             retry_count += 1
             backoff_time = min(60, initial_delay * (backoff_factor ** retry_count))  # 60 seconds max delay
             await asyncio.sleep(backoff_time)
@@ -511,7 +512,7 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
     lock_expiration_time = timedelta(minutes=10)
     async with db_session.create_async_session() as session:
         if not await acquire_dd_service_lock(session, txid, lock_expiration_time):
-            log.warning(f"Download of dd-service data for txid {txid} is already in progress, skipping...")
+            # log.warning(f"Download of dd-service data for txid {txid} is already in progress, skipping...")
             return None
     try:
         requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
@@ -522,7 +523,7 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
         headers = {'Authorization': 'testpw123'}
         async with httpx.AsyncClient() as client:
             log.info(f'Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}') 
-            response = await client.get(request_url, headers=headers, timeout=60.0)
+            response = await client.get(request_url, headers=headers, timeout=250.0)
             if response.status_code != 200:
                 log.error(f"Received {response.status_code} from Sense API for txid {txid}.")
                 raise ValueError(f"Received {response.status_code} from Sense API.")
@@ -553,7 +554,8 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
     except Exception as e:
         async with db_session.create_async_session() as session:
             await delete_dd_service_lock(session, txid)
-        log.error(f"Failed to get raw DD service results from Sense API for txid {txid} with error: {e}")
+        full_stack_trace = traceback.format_exc()
+        log.error(f"Failed to get raw DD service results from Sense API for txid {txid} with error: {e}\nFull Stack Trace:\n{full_stack_trace}")
         raise e
     
 async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str) -> RawDDServiceData:
@@ -810,7 +812,7 @@ async def acquire_cascade_file_lock(session, txid, lock_expiration_time):
             await session.commit()
             return True
         except Exception as e:
-            log.error(f"Exception while attempting to acquire lock for txid {txid}: {e}")
+            # log.error(f"Exception while attempting to acquire lock for txid {txid}: {e}")
             retry_count += 1
             backoff_time = min(60, initial_delay * (backoff_factor ** retry_count))  # 60 seconds max delay
             await asyncio.sleep(backoff_time)
@@ -918,7 +920,7 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
         request_url = f'http://localhost:8080/openapi/cascade/download?pid={requester_pastelid}&txid={txid}'
         headers = {'Authorization': 'testpw123'}
         async with db_session.create_async_session() as session:
-            check_bad_txid_result = await check_and_update_cascade_ticket_bad_txid_func(txid, session)
+            check_bad_txid_result = await check_and_update_cascade_ticket_bad_txid_func(session, txid)
             if check_bad_txid_result:
                 log.warning(f'TXID {txid} is marked as bad.')
                 return check_bad_txid_result, ""
@@ -1079,9 +1081,9 @@ async def get_random_cascade_txids_func(n: int) -> List[str]:
         cascade_ticket_dict_df_filtered = cascade_ticket_dict_df[cascade_ticket_dict_df['action_type'] == 'cascade'].drop_duplicates(subset=['txid'])
         txids = cascade_ticket_dict_df_filtered['txid'].tolist()
         if n < 10:
-            txids_sample = random.sample(txids, min(6*n, len(txids))) # Sample 6n TXIDs to increase the chance of getting enough public ones.
+            txids_sample = random.sample(txids, min(10*n, len(txids))) # Sample more TXIDs than we need to increase the chance of getting enough publicly accessible ones.
         else:
-            txids_sample = random.sample(txids, min(3*n, len(txids))) # Sample 3n TXIDs to increase the chance of getting enough public ones.
+            txids_sample = random.sample(txids, min(5*n, len(txids)))
         accessible_txids = []
         for txid in txids_sample:
             try:
