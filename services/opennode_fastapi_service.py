@@ -1,4 +1,5 @@
 import asyncio
+import aiohttp
 import base64
 import decimal
 import hashlib
@@ -17,10 +18,10 @@ import traceback
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
-
+from pathlib import Path
+from contextlib import asynccontextmanager
 import aiofiles
 import dirtyjson
-import httpx
 import magic
 import numpy as np
 import pandas as pd
@@ -60,12 +61,17 @@ else:
     parent.nice(19)
 
 USER_AGENT = "AuthServiceProxy/0.1"
-HTTP_TIMEOUT = 90
+HTTP_TIMEOUT = 180
 
-#Setup logging:
+# Setup logging:
 log = logging.getLogger("PastelOpenNodeFastAPI")
+log.propagate = False  # Stop propagating to parent loggers
+for handler in log.handlers[:]:
+    log.removeHandler(handler)
 log.setLevel(logging.INFO)
-log_file_full_path = 'opennode_fastapi_log.txt'
+log_folder = Path('old_application_log_files')
+log_folder.mkdir(parents=True, exist_ok=True)
+log_file_full_path = log_folder / 'pastel_portal_log.txt'
 rotating_handler = RotatingFileHandler(log_file_full_path, maxBytes=5*1024*1024, backupCount=10)
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
@@ -99,7 +105,31 @@ class SizeLimitedLRUCache(LRUCache):
         
 # Create a cache with a maximum size
 cache = SizeLimitedLRUCache(maxsize=10 * 1024 * 1024 * 1024)  # 10 GB
+active_sessions = {}  # Dictionary to hold active sessions and their last used times
+df_lock = asyncio.Lock()
 
+async def cleanup_idle_sessions():
+    max_idle_time_in_seconds = 1000
+    while True:
+        current_time = asyncio.get_event_loop().time()
+        idle_sessions = [s for s, last_used in active_sessions.items() if current_time - last_used > max_idle_time_in_seconds]
+        for session in idle_sessions:
+            await session.close()
+            del active_sessions[session]
+        await asyncio.sleep(60)
+        
+cleanup_task = asyncio.create_task(cleanup_idle_sessions())
+
+@asynccontextmanager
+async def get_client_session():
+    connector = aiohttp.TCPConnector(limit=1000)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        active_sessions[session] = asyncio.get_event_loop().time()  # Add session to active_sessions
+        yield session
+        
+def parse_mime_type(mime_type):
+    return tuple(mime_type.split(';')[0].split('/'))
+        
 async def load_cache():  # Populate cache from the existing files in the cache directory
     for filename in os.listdir(cache_dir):
         file_path = os.path.join(cache_dir, filename)
@@ -165,12 +195,13 @@ def EncodeDecimal(o):
     raise TypeError(repr(o) + " is not JSON serializable")
     
 class AsyncAuthServiceProxy:
-    _semaphore = asyncio.BoundedSemaphore(10) # Limit to 10 concurrent requests
-    def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2, request_timeout=60):
+    max_concurrent_requests = 5000
+    _semaphore = asyncio.BoundedSemaphore(max_concurrent_requests)
+    def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2, request_timeout=20):
         self.service_url = service_url
         self.service_name = service_name
         self.url = urlparse.urlparse(service_url)        
-        self.client = AsyncClient(timeout=Timeout(request_timeout), limits=Limits(max_connections=20, max_keepalive_connections=10))
+        self.client = AsyncClient(timeout=Timeout(request_timeout), limits=Limits(max_connections=200, max_keepalive_connections=10))
         self.id_count = 0
         user = self.url.username
         password = self.url.password
@@ -231,35 +262,35 @@ class AsyncAuthServiceProxy:
             else:
                 return response_json['result']
         
-def get_current_pastel_block_height_func():
+async def get_current_pastel_block_height_func():
     global rpc_connection
-    best_block_hash = rpc_connection.getbestblockhash()
-    best_block_details = rpc_connection.getblock(best_block_hash)
+    best_block_hash = await rpc_connection.getbestblockhash()
+    best_block_details = await rpc_connection.getblock(best_block_hash)
     curent_block_height = best_block_details['height']
     return curent_block_height
 
-def get_previous_block_hash_and_merkle_root_func():
+async def get_previous_block_hash_and_merkle_root_func():
     global rpc_connection
-    previous_block_height = get_current_pastel_block_height_func()
-    previous_block_hash = rpc_connection.getblockhash(previous_block_height)
-    previous_block_details = rpc_connection.getblock(previous_block_hash)
+    previous_block_height = await get_current_pastel_block_height_func()
+    previous_block_hash = await rpc_connection.getblockhash(previous_block_height)
+    previous_block_details = await rpc_connection.getblock(previous_block_hash)
     previous_block_merkle_root = previous_block_details['merkleroot']
     return previous_block_hash, previous_block_merkle_root, previous_block_height
 
-def get_last_block_data_func():
+async def get_last_block_data_func():
     global rpc_connection
-    current_block_height = get_current_pastel_block_height_func()
-    block_data = rpc_connection.getblock(str(current_block_height))
+    current_block_height = await get_current_pastel_block_height_func()
+    block_data = await rpc_connection.getblock(str(current_block_height))
     return block_data
 
-def check_psl_address_balance_func(address_to_check):
+async def check_psl_address_balance_func(address_to_check):
     global rpc_connection
-    balance_at_address = rpc_connection.z_getbalance(address_to_check) 
+    balance_at_address = await rpc_connection.z_getbalance(address_to_check) 
     return balance_at_address
-  
-def get_raw_transaction_func(txid):
+
+async def get_raw_transaction_func(txid):
     global rpc_connection
-    raw_transaction_data = rpc_connection.getrawtransaction(txid, 1) 
+    raw_transaction_data = await rpc_connection.getrawtransaction(txid, 1) 
     return raw_transaction_data
 
 async def verify_message_with_pastelid_func(pastelid, message_to_verify, pastelid_signature_on_message) -> str:
@@ -310,9 +341,9 @@ async def get_network_storage_fees_func():
     json_results = {'network_median_storage_fee': network_median_storage_fee, 'network_median_nft_ticket_fee': network_median_nft_ticket_fee}
     return json_results
     
-def get_local_machine_supernode_data_func():
+async def get_local_machine_supernode_data_func():
     local_machine_ip = get_external_ip_func()
-    supernode_list_full_df = check_supernode_list_func()
+    supernode_list_full_df = await check_supernode_list_func()
     proper_port_number = statistics.mode([x.split(':')[1] for x in supernode_list_full_df['ipaddress:port'].values.tolist()])
     local_machine_ip_with_proper_port = local_machine_ip + ':' + proper_port_number
     local_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['ipaddress:port'] == local_machine_ip_with_proper_port]
@@ -325,8 +356,8 @@ def get_local_machine_supernode_data_func():
         local_sn_pastelid = local_machine_supernode_data['extKey'].values[0]
     return local_machine_supernode_data, local_sn_rank, local_sn_pastelid, local_machine_ip_with_proper_port
 
-def get_sn_data_from_pastelid_func(specified_pastelid):
-    supernode_list_full_df = check_supernode_list_func()
+async def get_sn_data_from_pastelid_func(specified_pastelid):
+    supernode_list_full_df = await check_supernode_list_func()
     specified_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['extKey'] == specified_pastelid]
     if len(specified_machine_supernode_data) == 0:
         log.error('Specified machine is not a supernode!')
@@ -334,15 +365,15 @@ def get_sn_data_from_pastelid_func(specified_pastelid):
     else:
         return specified_machine_supernode_data
 
-def get_sn_data_from_sn_pubkey_func(specified_sn_pubkey):
-    supernode_list_full_df = check_supernode_list_func()
+async def get_sn_data_from_sn_pubkey_func(specified_sn_pubkey):
+    supernode_list_full_df = await check_supernode_list_func()
     specified_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['pubkey'] == specified_sn_pubkey]
     if len(specified_machine_supernode_data) == 0:
         log.error('Specified machine is not a supernode!')
         return pd.DataFrame()
     else:
         return specified_machine_supernode_data
-   
+
 def check_if_transparent_psl_address_is_valid_func(pastel_address_string):
     if len(pastel_address_string) == 35 and (pastel_address_string[0:2] == 'Pt'):
         pastel_address_is_valid = 1
@@ -364,12 +395,18 @@ async def get_df_json_from_tickets_list_rpc_response_func(rpc_response):
     tickets_df_json = tickets_df.to_json(orient='index')
     return tickets_df_json
 
+
 async def get_pastel_blockchain_ticket_func(txid):
     global rpc_connection
     response_json = await rpc_connection.tickets('get', txid )
     if len(response_json) > 0:
         ticket_type_string = response_json['ticket']['type']
         corresponding_reg_ticket_block_height = response_json['height']
+        latest_block_height = await get_current_pastel_block_height_func()
+        if int(corresponding_reg_ticket_block_height) < 0:
+            log.warning(f'The corresponding reg ticket block height of {corresponding_reg_ticket_block_height} is less than 0!')
+        if int(corresponding_reg_ticket_block_height) > int(latest_block_height):
+            log.info(f'The corresponding reg ticket block height of {corresponding_reg_ticket_block_height} is greater than the latest block height of {latest_block_height}!')
         corresponding_reg_ticket_block_info = await rpc_connection.getblock(str(corresponding_reg_ticket_block_height))
         corresponding_reg_ticket_block_timestamp = corresponding_reg_ticket_block_info['time']
         corresponding_reg_ticket_block_timestamp_utc_iso = datetime.utcfromtimestamp(corresponding_reg_ticket_block_timestamp).isoformat()
@@ -390,6 +427,7 @@ async def get_pastel_blockchain_ticket_func(txid):
     else:
         response_json = 'No ticket found for this txid'
     return response_json
+
 
 async def get_all_pastel_blockchain_tickets_func(verbose=0):
     if verbose:
@@ -484,7 +522,7 @@ async def acquire_dd_service_lock(session, txid, lock_expiration_time):
                 session.add(lock)
             await session.commit()
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: F841
             # log.error(f"An exception occurred while attempting to acquire a DD service lock for txid {txid}: {e}")
             retry_count += 1
             backoff_time = min(60, initial_delay * (backoff_factor ** retry_count))  # 60 seconds max delay
@@ -508,55 +546,54 @@ async def get_raw_dd_service_results_from_local_db_func(txid: str) -> Optional[R
         log.error(f"An exception occurred while attempting to get raw DD service results from local DB for txid {txid}: {e}")
         raise e
     
+
 async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type: str, corresponding_pastel_blockchain_ticket_data: dict) -> RawDDServiceData:
     lock_expiration_time = timedelta(minutes=10)
-    async with db_session.create_async_session() as session:
+    async with db_session.create_async_session() as session, get_client_session() as client_session:
+        active_sessions[client_session] = asyncio.get_event_loop().time()
         if not await acquire_dd_service_lock(session, txid, lock_expiration_time):
-            # log.warning(f"Download of dd-service data for txid {txid} is already in progress, skipping...")
             return None
-    try:
-        requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
-        if ticket_type == 'sense':
-            request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
-        else:
-            raise ValueError(f'Invalid ticket type for txid {txid}! Ticket type must be "sense"!')
-        headers = {'Authorization': 'testpw123'}
-        async with httpx.AsyncClient() as client:
-            log.info(f'Now attempting to download Raw DD-Service results for ticket type {ticket_type} and txid: {txid}') 
-            response = await client.get(request_url, headers=headers, timeout=250.0)
-            if response.status_code != 200:
-                log.error(f"Received {response.status_code} from Sense API for txid {txid}.")
-                raise ValueError(f"Received {response.status_code} from Sense API.")
-            log.info(f'Finished downloading Raw DD-Service results for ticket type {ticket_type} and txid: {txid}; Took {round(response.elapsed.total_seconds(),2)} seconds')
-        parsed_response = response.json()
-        if parsed_response['file'] is None:
-            raise ValueError(f'No file was returned from the {ticket_type} API for txid {txid}!')
-        decoded_response = base64.b64decode(parsed_response['file'])
-        final_response = json.loads(decoded_response)
-        final_response_df = pd.DataFrame.from_records([final_response])
-        raw_dd_service_data = RawDDServiceData()
-        raw_dd_service_data.ticket_type = ticket_type
-        raw_dd_service_data.registration_ticket_txid = txid
-        raw_dd_service_data.hash_of_candidate_image_file = final_response_df['hash_of_candidate_image_file'][0]
-        raw_dd_service_data.pastel_id_of_submitter = final_response_df['pastel_id_of_submitter'][0]
-        raw_dd_service_data.pastel_block_hash_when_request_submitted = final_response_df['pastel_block_hash_when_request_submitted'][0]
-        raw_dd_service_data.pastel_block_height_when_request_submitted = str(final_response_df['pastel_block_height_when_request_submitted'][0])
-        raw_dd_service_data.raw_dd_service_data_json = decoded_response
-        raw_dd_service_data.corresponding_pastel_blockchain_ticket_data = str(corresponding_pastel_blockchain_ticket_data)
-        # Data Validation
-        if not all([raw_dd_service_data.ticket_type, raw_dd_service_data.registration_ticket_txid, raw_dd_service_data.hash_of_candidate_image_file]):
-            log.error("Validation failed: Some required fields are missing.")
-            raise ValueError("Validation failed: Some required fields are missing.")
-        await add_record_to_write_queue(raw_dd_service_data)
-        async with db_session.create_async_session() as session:
-            await delete_dd_service_lock(session, txid)
-        return raw_dd_service_data
-    except Exception as e:
-        async with db_session.create_async_session() as session:
-            await delete_dd_service_lock(session, txid)
-        full_stack_trace = traceback.format_exc()
-        log.error(f"Failed to get raw DD service results from Sense API for txid {txid} with error: {e}\nFull Stack Trace:\n{full_stack_trace}")
-        raise e
+        try:
+            requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
+            if ticket_type == 'sense':
+                request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
+            elif ticket_type == 'nft':
+                request_url = f'http://localhost:8080/nfts/download?pid={requester_pastelid}&txid={txid}'
+            else:
+                raise ValueError(f'Invalid ticket type for txid {txid}! Ticket type must be "sense" or "nft"!')
+            headers = {'Authorization': 'testpw123'}
+            async with client_session.get(request_url, headers=headers, timeout=250) as response:
+                if response.status != 200:
+                    raise ValueError(f"Received {response.status} from {ticket_type} API.")
+                body = await response.read()
+            parsed_response = json.loads(body.decode())
+            if parsed_response['file'] is None:
+                raise ValueError(f'No file was returned from the {ticket_type} API for txid {txid}!')
+            decoded_response = base64.b64decode(parsed_response['file'])
+            final_response = json.loads(decoded_response)
+            final_response_df = pd.DataFrame.from_records([final_response])
+            raw_dd_service_data = RawDDServiceData()
+            raw_dd_service_data.ticket_type = ticket_type
+            raw_dd_service_data.registration_ticket_txid = txid
+            raw_dd_service_data.hash_of_candidate_image_file = final_response_df['hash_of_candidate_image_file'][0]
+            raw_dd_service_data.pastel_id_of_submitter = final_response_df['pastel_id_of_submitter'][0]
+            raw_dd_service_data.pastel_block_hash_when_request_submitted = final_response_df['pastel_block_hash_when_request_submitted'][0]
+            raw_dd_service_data.pastel_block_height_when_request_submitted = str(final_response_df['pastel_block_height_when_request_submitted'][0])
+            raw_dd_service_data.raw_dd_service_data_json = decoded_response
+            raw_dd_service_data.corresponding_pastel_blockchain_ticket_data = str(corresponding_pastel_blockchain_ticket_data)
+            if not all([raw_dd_service_data.ticket_type, raw_dd_service_data.registration_ticket_txid, raw_dd_service_data.hash_of_candidate_image_file]):
+                raise ValueError("Validation failed: Some required fields are missing.")
+            await add_record_to_write_queue(raw_dd_service_data)
+            async with db_session.create_async_session() as session:
+                await delete_dd_service_lock(session, txid)
+            return raw_dd_service_data
+        except Exception as e:
+            async with db_session.create_async_session() as session:
+                await delete_dd_service_lock(session, txid)
+            full_stack_trace = traceback.format_exc()
+            raise e
+        finally:
+            await client_session.close()
     
 async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str) -> RawDDServiceData:
     try:
@@ -726,7 +763,6 @@ async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: s
         return parsed_data, True
     raw_data, _ = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid)
     parsed_data = await parse_raw_dd_service_data_func(raw_data)
-    # Double-check to avoid race conditions
     _, is_cached = await check_for_parsed_dd_service_result_in_db_func(txid)
     if not is_cached:
         await save_parsed_dd_service_data_to_db_func(parsed_data)
@@ -739,8 +775,7 @@ async def add_bad_txid_to_db_func(session, txid, type, reason):
     result = await session.execute(query)
     bad_txid_exists = result.scalars().first()
     if bad_txid_exists is None:
-        new_bad_txid = BadTXID(txid=txid, ticket_type=type, reason_txid_is_bad=reason, failed_attempts=1,
-                               next_attempt_time=datetime.utcnow() + timedelta(days=1))
+        new_bad_txid = BadTXID(txid=txid, ticket_type=type, reason_txid_is_bad=reason, failed_attempts=1, next_attempt_time=datetime.utcnow() + timedelta(days=1))
         session.add(new_bad_txid)
     else:
         bad_txid_exists.failed_attempts += 1
@@ -811,7 +846,7 @@ async def acquire_cascade_file_lock(session, txid, lock_expiration_time):
                 session.add(lock)
             await session.commit()
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: F841
             # log.error(f"Exception while attempting to acquire lock for txid {txid}: {e}")
             retry_count += 1
             backoff_time = min(60, initial_delay * (backoff_factor ** retry_count))  # 60 seconds max delay
@@ -824,44 +859,52 @@ async def delete_cascade_file_lock_func(session, txid: str):
         await session.delete(lock_exists)
         await session.commit()
 
-async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str):
+
+async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str, retry_count=0, max_retries=3):
     lock_expiration_time = timedelta(minutes=10)
-    if not await acquire_cascade_file_lock(session, txid, lock_expiration_time):
-        return None, None
-    cache_file_path, decoded_response = None, None
-    try:
-        async with httpx.AsyncClient() as client:
-            async with client.stream('GET', request_url, headers=headers, timeout=600.0) as response:
-                body = await response.aread()
+    async with get_client_session() as client_session:
+        active_sessions[client_session] = asyncio.get_event_loop().time()
+        if not await acquire_cascade_file_lock(session, txid, lock_expiration_time):
+            return None, None    
+        cache_file_path, decoded_response = None, None
+        try:
+            async with client_session.get(request_url, headers=headers, timeout=600.0) as response:
+                body = await response.read()
                 parsed_response = json.loads(body.decode())
-        if parsed_response.get('name') == 'InternalServerError':
-            log.error(f"Server error during download: {parsed_response.get('message')}")
-            await delete_cascade_file_lock_func(session, txid)
-            return f"Server error: {parsed_response.get('message')}", None
-        if 'file_id' in parsed_response.keys():
-            file_identifier = parsed_response['file_id']
-            file_download_url = f"http://localhost:8080/files/{file_identifier}"
-            async with httpx.AsyncClient() as client:
-                async with client.stream('GET', file_download_url, headers=headers, timeout=500.0) as response:
-                    decoded_response = await response.aread()
-            cache_file_path = os.path.join(cache_dir, txid)
-            async with aiofiles.open(cache_file_path, mode='wb') as f:
-                await f.write(decoded_response)
-        else:
-            log.error("Response did not contain a file_id.")
-            await delete_cascade_file_lock_func(session, txid)
-            return "No file_id in response.", None
-    except Exception as e:
-        log.error(f'Exception during download: {e}')
-        await delete_cascade_file_lock_func(session, txid)
-        await add_bad_txid_to_db_func(session, txid, 'cascade', str(e))
-        return f"Exception occurred: {e}", None
+            if parsed_response.get('name') == 'InternalServerError':
+                log.error(f"Server error during download: {parsed_response.get('message')}")
+                await delete_cascade_file_lock_func(session, txid)
+                return f"Server error: {parsed_response.get('message')}", None
+            if 'file_id' in parsed_response.keys():
+                file_identifier = parsed_response['file_id']
+                file_download_url = f"http://localhost:8080/files/{file_identifier}"
+                async with client_session.get(file_download_url, headers=headers, timeout=500.0) as response:
+                    decoded_response = await response.read()
+                cache_file_path = os.path.join(cache_dir, txid)
+                async with aiofiles.open(cache_file_path, mode='wb') as f:
+                    await f.write(decoded_response)
+            else:
+                log.error("Response did not contain a file_id.")
+                await delete_cascade_file_lock_func(session, txid)
+                return "No file_id in response.", None
+        except Exception as e:
+            log.error(f'Exception during download: {e}')
+            if retry_count < max_retries:
+                await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir, retry_count=retry_count + 1)
+            else:
+                await delete_cascade_file_lock_func(session, txid)
+                await add_bad_txid_to_db_func(session, txid, 'cascade', str(e))
+                return f"Exception occurred: {e}", None
+        finally:
+            await client_session.close()            
     return cache_file_path, decoded_response
+
 
 async def check_and_manage_cascade_file_cache_func(txid: str, cache_file_path: str, decoded_response):
     cache[txid] = cache_file_path  # Update LRU cache
     log.info(f'Successfully decoded response from Cascade API for txid {txid}!')
     return decoded_response
+
 
 async def get_cascade_original_file_metadata_func(txid: str):
     try:
@@ -886,6 +929,7 @@ async def get_cascade_original_file_metadata_func(txid: str):
         await add_bad_txid_to_db_func(txid, 'cascade', str(e))
         return str(txid), False
 
+
 async def verify_downloaded_cascade_file_func(file_data, expected_hash, expected_size, expected_mime_type):
     try:
         sha3_256 = hashlib.sha3_256(file_data).hexdigest()
@@ -899,7 +943,9 @@ async def verify_downloaded_cascade_file_func(file_data, expected_hash, expected
             log.error(error_msg)
             return error_msg
         mime_type = magic.from_buffer(file_data, mime=True)
-        if mime_type != expected_mime_type:
+        expected_main_type, expected_sub_type = parse_mime_type(expected_mime_type)
+        actual_main_type, actual_sub_type = parse_mime_type(mime_type)
+        if (expected_main_type, expected_sub_type) != (actual_main_type, actual_sub_type):
             error_msg = f'MIME type mismatch: expected {expected_mime_type}, got {mime_type}'
             log.error(error_msg)
             return error_msg
@@ -910,7 +956,8 @@ async def verify_downloaded_cascade_file_func(file_data, expected_hash, expected
         log.error(error_msg)
         return error_msg
 
-async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str, use_cascade_file_cache: bool = True):
+
+async def   download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str, use_cascade_file_cache: bool = True):
     global cache
     log.info(f'Starting download process for txid {txid}.')
     try:
@@ -953,8 +1000,9 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
             try:
                 verification_result = await verify_downloaded_cascade_file_func(decoded_response, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type)
                 log.info(f'Finished download process for txid {txid} in {time.time() - start_time} seconds.')
-                return decoded_response, original_file_name_string                
-                if verification_result is not True:
+                if verification_result:
+                    return decoded_response, original_file_name_string                
+                else:
                     log.error(f'File verification failed for txid {txid}. Error: {verification_result}')
                     return verification_result, ""
             except Exception as e:
@@ -1007,6 +1055,8 @@ async def populate_database_with_all_dd_service_data_func():
     except Exception as e:
         log.error(f"Unexpected error: {str(e)}")
         return
+    min_height_for_nft = 335000
+    min_height_for_sense = 335000
     combined_txids = shuffle_and_combine_txids(sense_ticket_df, nft_ticket_df)
     random_delay_in_seconds = random.randint(1, 15)
     await asyncio.sleep(random_delay_in_seconds)
@@ -1017,7 +1067,7 @@ async def populate_database_with_all_dd_service_data_func():
                 ticket_type = 'nft' if is_nft_ticket else 'sense'
                 if txid in await get_bad_txids_from_db_func(session, ticket_type):
                     continue
-                if await should_skip_txid(txid, is_nft_ticket, 290000, 300000):
+                if await should_skip_txid(txid, is_nft_ticket, min_height_for_nft, min_height_for_sense):
                     continue
                 data, is_cached = await get_parsed_dd_service_results_by_registration_ticket_txid_func(txid)
             except JSONRPCException as e:
@@ -1073,39 +1123,38 @@ async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
 
 
 async def get_random_cascade_txids_func(n: int) -> List[str]:
-    try:
-        log.info(f'Attempting to get {n} random cascade TXIDs...')
-        tickets_obj = await get_all_pastel_blockchain_tickets_func()
-        cascade_ticket_dict = json.loads(tickets_obj['action'])
-        cascade_ticket_dict_df = pd.DataFrame(cascade_ticket_dict).T
-        cascade_ticket_dict_df_filtered = cascade_ticket_dict_df[cascade_ticket_dict_df['action_type'] == 'cascade'].drop_duplicates(subset=['txid'])
-        txids = cascade_ticket_dict_df_filtered['txid'].tolist()
-        if n < 10:
-            txids_sample = random.sample(txids, min(10*n, len(txids))) # Sample more TXIDs than we need to increase the chance of getting enough publicly accessible ones.
-        else:
-            txids_sample = random.sample(txids, min(5*n, len(txids)))
-        accessible_txids = []
-        for txid in txids_sample:
-            try:
-                ticket_response = await get_pastel_blockchain_ticket_func(txid)
-                action_ticket = json.loads(base64.b64decode(ticket_response['ticket']['action_ticket']))
-                api_ticket_str = action_ticket['api_ticket']
-                correct_padding = len(api_ticket_str) % 4
-                if correct_padding != 0:
-                    api_ticket_str += '=' * (4 - correct_padding)
-                api_ticket = json.loads(base64.b64decode(api_ticket_str).decode('utf-8'))
-                if api_ticket['make_publicly_accessible']:
-                    accessible_txids.append(txid)
-            except Exception as e:
-                log.error(f'An error occurred while checking if txid {txid} is publicly accessible! Error message: {e}')
-        accessible_txids = [x for x in accessible_txids if len(x) == 64 and x.isalnum()]
-        accessible_txids = list(set(accessible_txids))  # convert list to set to remove duplicates, then convert back to list
-        if len(accessible_txids) < n:
-            log.warning('Not enough publicly accessible TXIDs for the requested number. Returning all that were found.')
-        return random.sample(accessible_txids, min(n, len(accessible_txids)))
-    except Exception as e:
-        log.error(f'An error occurred while trying to get random cascade transaction IDs! Error message: {e}')
-        return []
+    min_block_height = 325000
+    log.info(f'Attempting to get {n} random cascade TXIDs...')
+    tickets_obj = await get_all_pastel_blockchain_tickets_func()
+    cascade_ticket_dict = json.loads(tickets_obj['action'])
+    cascade_ticket_dict_df = pd.DataFrame(cascade_ticket_dict).T
+    cascade_ticket_dict_df_filtered = cascade_ticket_dict_df[cascade_ticket_dict_df['action_type'] == 'cascade'].drop_duplicates(subset=['txid'])
+    txids = cascade_ticket_dict_df_filtered['txid'].tolist()
+    if n < 10:
+        txids_sample = random.sample(txids, min(20*n, len(txids))) # Sample more TXIDs than we need to increase the chance of getting enough publicly accessible ones.
+    else:
+        txids_sample = random.sample(txids, min(8*n, len(txids)))
+    accessible_txids = []
+    for txid in txids_sample:
+        try:
+            ticket_response = await get_pastel_blockchain_ticket_func(txid)
+            action_ticket = json.loads(base64.b64decode(ticket_response['ticket']['action_ticket']))
+            if action_ticket['blocknum'] < min_block_height:
+                continue
+            api_ticket_str = action_ticket['api_ticket']
+            correct_padding = len(api_ticket_str) % 4
+            if correct_padding != 0:
+                api_ticket_str += '=' * (4 - correct_padding)
+            api_ticket = json.loads(base64.b64decode(api_ticket_str).decode('utf-8'))
+            if api_ticket['make_publicly_accessible']:
+                accessible_txids.append(txid)
+        except Exception as e:
+            log.error(f'An error occurred while checking if txid {txid} is publicly accessible! Error message: {e}')
+    accessible_txids = [x for x in accessible_txids if len(x) == 64 and x.isalnum()]
+    accessible_txids = list(set(accessible_txids))  # convert list to set to remove duplicates, then convert back to list
+    if len(accessible_txids) < n:
+        log.warning('Not enough publicly accessible TXIDs for the requested number. Returning all that were found.')
+    return random.sample(accessible_txids, min(n, len(accessible_txids)))
     
     
 async def download_cascade_file_test_func(txid: str) -> dict:
@@ -1137,23 +1186,25 @@ def get_walletnode_log_data_func():
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, shell=True)
         output, _ = process.communicate()
-        log_data = output.decode('utf-8')
-        return log_data
+        if process.returncode != 0:
+            log.error('Non-zero exit code received.')
+            return None
+        return output.decode('utf-8')
     except Exception as e:
-        log.error(f'An error occurred while trying to get data from the wallet node log file! Error message: {e}')
+        log.error(f'Error: {e}')
         return None
     
     
-def parse_walletnode_log_data_func(log_data):
+def parse_walletnode_log_data_func(log_data: str):
     if log_data is None:
-        log.error('Cannot parse wallet node log data, as it is None!')
-        return []
+        log.error('Log data is None.')
+        return [], {}
     log_pattern = r'\[(.*?)\]\s+INFO\s+(.*?):\s+(.*?)\sserver_ip=(.*?)\s(.*?)$'
     txid_pattern = r'txid=(\w+)'
     downloaded_pattern = r'Downloaded from supernode address=(.*?)\s'
     parsed_data = []
-    supernode_ips_dict = {}  # Changed from a set to a dictionary
-    current_index = {}  # Stores the current index for each txid
+    supernode_ips_dict = {} 
+    current_index = {}
     current_year = datetime.utcnow().year
     for line in log_data.split('\n'):
         match = re.match(log_pattern, line)
@@ -1178,136 +1229,132 @@ def parse_walletnode_log_data_func(log_data):
                     supernode_match = re.search(downloaded_pattern, line)
                     if supernode_match:
                         supernode_ip = supernode_match.group(1)
-                        if txid not in supernode_ips_dict:  # Add this check
+                        if txid not in supernode_ips_dict:
                             supernode_ips_dict[txid] = []
                         supernode_ips_dict[txid].append(supernode_ip)
                 parsed_data.append(data)
     parsed_data_df = pd.DataFrame(parsed_data)
-    return parsed_data_df, supernode_ips_dict  # Return the dictionary instead of a list
+    return parsed_data_df, supernode_ips_dict
 
 
-def update_cascade_status_func(df: pd.DataFrame):
+def update_cascade_status_func(df):
+    df = df.copy()
     log_data = get_walletnode_log_data_func()
     parsed_log_data, supernode_ips_dict = parse_walletnode_log_data_func(log_data)
     txid_log_dict = {}
     for idx, row in parsed_log_data.iterrows():
         txid = row['txid']
-        log_line = {
-            'index': row['index'], 
-            'datetime': row['timestamp'], 
-            'message': row['message']
-        }
+        log_line = {'index': row['index'], 'datetime': row['timestamp'], 'message': row['message']}
         if txid in txid_log_dict:
             txid_log_dict[txid]['log_lines'].append(log_line)
         else:
-            txid_log_dict[txid] = {
-                'last_log_status': row['message'], 
-                'log_lines': [log_line]
-            }
+            txid_log_dict[txid] = {'last_log_status': row['message'], 'log_lines': [log_line]}
         if 'txid' in df.columns and txid in df['txid'].values:
             df.loc[df['txid'] == txid, 'last_log_status'] = row['message']
             df.loc[df['txid'] == txid, 'supernode_ips'] = ", ".join(supernode_ips_dict.get(txid, []))
             if row['message'] == 'Start downloading':
-                df.loc[df['txid'] == txid, 'datetime_started'] = row['timestamp'] if pd.notnull(row['timestamp']) else 'NA'
+                df.loc[df['txid'] == txid, 'datetime_started'] = row['timestamp']
             elif row['message'] == 'Finished downloading':
-                df.loc[df['txid'] == txid, 'datetime_finished'] = row['timestamp'] if pd.notnull(row['timestamp']) else 'NA'
+                df.loc[df['txid'] == txid, 'datetime_finished'] = row['timestamp']
         else:
-            new_row = {
-                'index': row['index'],
-                'timestamp': row['timestamp'],
-                'message': row['message'],
-                'txid': txid,
-                'supernode_ips': ", ".join(supernode_ips_dict.get(txid, []))
-            }
-            df = df.append(new_row, ignore_index=True)
+            new_row = {'index': row['index'], 'timestamp': row['timestamp'], 'message': row['message'], 'txid': txid, 'supernode_ips': ", ".join(supernode_ips_dict.get(txid, []))}
+            if not isinstance(df, pd.DataFrame):
+                log.warning(f"df is not a DataFrame at the point of append. It is: {type(df)}")
+                return pd.DataFrame([new_row]), {}, {}
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     return df, txid_log_dict, supernode_ips_dict
 
 
-async def update_cascade_status_periodically_func(df: pd.DataFrame):
+async def update_cascade_status_periodically_func(df_container):
     txid_log_dict = {}
     supernode_ips_dict = {}
-    try:
-        while True:
-            df, new_txid_log_dict, new_supernode_ips_dict = update_cascade_status_func(df)
-            txid_log_dict.update(new_txid_log_dict)  
-            supernode_ips_dict.update(new_supernode_ips_dict)
-            await asyncio.sleep(0.5)
-    except asyncio.exceptions.CancelledError:
-        log.info('The status update task was cancelled.')
-    return df, txid_log_dict, supernode_ips_dict
+    while True:
+        if not isinstance(df_container[0], pd.DataFrame):
+            log.warning(f"df_container[0] is not a DataFrame. It is: {type(df_container[0])}")
+        new_df, new_txid_log_dict, new_supernode_ips_dict = update_cascade_status_func(df_container[0])
+        async with df_lock:
+            if new_df is not None and isinstance(new_df, pd.DataFrame):
+                df_container[0] = new_df.copy()
+            else:
+                log.warning("new_df is not a DataFrame.")
+            txid_log_dict = {**new_txid_log_dict}
+            supernode_ips_dict = {**new_supernode_ips_dict}
+        await asyncio.sleep(0.5)
+    return df_container[0].copy(), txid_log_dict.copy(), supernode_ips_dict.copy()
 
 
-async def perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading):
+def merge_and_resolve_columns(df1, df2, key_column):
+    merged_df = pd.merge(df1, df2, on=key_column, how='left', suffixes=('_x', '_y'))
+    for col in df1.columns:
+        if col == key_column:
+            continue
+        if f"{col}_x" in merged_df.columns and f"{col}_y" in merged_df.columns:
+            def resolve(row, col):
+                x = row[col + '_x']
+                y = row[col + '_y']
+                if pd.isna(x) and pd.isna(y):
+                    return None
+                elif pd.isna(x):
+                    return y
+                elif pd.isna(y):
+                    return x
+                elif isinstance(x, str) and isinstance(y, str):
+                    return x if len(x) > len(y) else y
+                elif isinstance(x, pd.Timestamp) and isinstance(y, pd.Timestamp):
+                    return pd.Timestamp((x.value + y.value) / 2)
+                else:
+                    return (x + y) / 2
+            merged_df[col] = merged_df.apply(lambda row: resolve(row, col), axis=1)
+            merged_df.drop([col + '_x', col + '_y'], axis=1, inplace=True)
+    return merged_df
+
+
+async def perform_bulk_cascade_test_download_tasks_func(txids: list, seconds_to_wait_for_all_files_to_finish_downloading: int):
     try:
-        df = pd.DataFrame()  # Initialize dataframe here
+        df_container = [pd.DataFrame()]
         txid_log_dict = {}
         supernode_ips_dict = {}
-        try:
-            update_task = asyncio.create_task(update_cascade_status_periodically_func(df))            
-        except Exception as e:
-            log.error(f'Exception occurred while starting update task: {e}')
+        update_task = asyncio.create_task(update_cascade_status_periodically_func(df_container))
         await asyncio.sleep(2)
-        try:    
-            download_tasks = [asyncio.create_task(download_cascade_file_test_func(txid)) for txid in txids]
-        except Exception as e:
-            log.error(f'Exception occurred while starting download tasks: {e}')
+        download_tasks = [asyncio.create_task(download_cascade_file_test_func(txid)) for txid in txids]
         log.info('Waiting for download tasks to finish...')
+        finished, unfinished = await asyncio.wait(download_tasks, timeout=seconds_to_wait_for_all_files_to_finish_downloading)
+        update_task.cancel()
         try:
-            finished, unfinished = await asyncio.wait(download_tasks, timeout=seconds_to_wait_for_all_files_to_finish_downloading)
-            max_cancel_attempts = 3  # Set maximum cancel attempts
-            cancel_timeout = 20  # Set cancel timeout
-            status_df = pd.DataFrame()
-            txid_log_dict = {}
-            supernode_ips_dict = {}
-            if update_task in finished:
-                status_df, txid_log_dict, supernode_ips_dict = update_task.result()
-            else:
-                for attempt in range(max_cancel_attempts):
-                    update_task.cancel()
-                    try:
-                        await asyncio.wait([update_task], timeout=cancel_timeout)
-                    except asyncio.exceptions.TimeoutError:
-                        log.warning(f'Update task did not finish within the expected time. Attempt {attempt + 1} of {max_cancel_attempts}.')
-                        continue
-                    if update_task.done():
-                        try:
-                            status_df, txid_log_dict, supernode_ips_dict = update_task.result()
-                        except asyncio.exceptions.CancelledError:
-                            log.warning('Update task was cancelled.')
-                            status_df = pd.DataFrame()
-                            txid_log_dict = {}
-                            supernode_ips_dict = {}
-                    break
-                else:  # This block runs if we have gone through all the attempts without breaking
-                    log.error('Update task did not finish even after multiple cancellation attempts. Aborting.')
-                    return None, None, None
-        except Exception as e:
-            log.error(f'Exception occurred while waiting for download tasks to finish: {e}')
+            await asyncio.wait([update_task], timeout=600)
+            async with df_lock:
+                if update_task.done():
+                    new_df, new_txid_log_dict, new_supernode_ips_dict = update_task.result()
+                    if not isinstance(new_df, pd.DataFrame):
+                        log.warning(f"new_df is not a DataFrame. It is: {type(new_df)}")
+                    df_container[0] = new_df
+                    txid_log_dict = new_txid_log_dict
+                    supernode_ips_dict = new_supernode_ips_dict
+        except asyncio.exceptions.TimeoutError:
+            log.warning('Update task did not finish within the expected time.')
+        except asyncio.exceptions.CancelledError:
+            async with df_lock:
+                log.info('The status update task was cancelled.')
         log.info('All download tasks finished.')
         download_data = [t.result() for t in finished if t.result() is not None and 'txid' in t.result()]
         download_df = pd.DataFrame(download_data)
-        if 'txid' in download_df.columns:
-            download_df['log_lines'] = download_df['txid'].map(txid_log_dict)
-            download_df['supernode_ips'] = download_df['txid'].apply(lambda x: ", ".join(supernode_ips_dict.get(x, [])))
-            download_df['txid'] = download_df['txid'].astype(str)      
-            if 'txid' in status_df.columns: 
-                if download_df['txid'].isin(status_df['txid']).sum() != download_df.shape[0]:
-                    df = pd.merge(download_df, status_df, how='left', on='txid')
-                else:
-                    df = download_df                
-        else:
-            df = download_df
+        download_df['log_lines'] = download_df['txid'].map(txid_log_dict)
+        download_df['supernode_ips'] = download_df['txid'].apply(lambda x: ", ".join(supernode_ips_dict.get(x, [])))
+        download_df['txid'] = download_df['txid'].astype(str)
+        async with df_lock:
+            if isinstance(df_container[0], pd.DataFrame):
+                df = merge_and_resolve_columns(download_df, df_container[0], 'txid')
         if 'datetime_finished' in df.columns and 'datetime_started' in df.columns:
             df['time_elapsed'] = (df['datetime_finished'] - df['datetime_started']).dt.total_seconds()
         else:
-            df['time_elapsed'] = np.nan             
+            df['time_elapsed'] = None
         return df, txid_log_dict, supernode_ips_dict
     except Exception as e:
         log.error(f'Error occurred while performing download tasks: {e}', exc_info=True)
         return None, None, None
-    
 
-def create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading, number_of_concurrent_downloads):
+
+def create_bulk_cascade_test_summary_stats_func(df: pd.DataFrame, seconds_to_wait_for_all_files_to_finish_downloading: int, number_of_concurrent_downloads: int):
     finished_before_timeout = df[df['time_elapsed'] < seconds_to_wait_for_all_files_to_finish_downloading].shape[0]
     finished_within_one_min = df[df['time_elapsed'] < 60].shape[0]
     if 'supernode_ips' in df.columns:
@@ -1349,11 +1396,15 @@ async def bulk_test_cascade_func(n: int):
         log.info('Starting bulk test of cascade...')
         txids = await get_random_cascade_txids_func(n)
         log.info(f'Got {len(txids)} txids for testing.')
-        seconds_to_wait_for_all_files_to_finish_downloading = 500
-        df, txid_log_dict, supernode_ips = await perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading)        
-        summary_df = create_bulk_cascade_test_summary_stats_func(df, seconds_to_wait_for_all_files_to_finish_downloading, n)
+        seconds_to_wait_for_all_files_to_finish_downloading = 600
+        df, txid_log_dict, supernode_ips = await perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading)
+        if not isinstance(df, pd.DataFrame):
+            log.error(f"df is not a DataFrame. It is: {type(df)}")
+            return {}
+        summary_df = create_bulk_cascade_test_summary_stats_func(df.copy(), seconds_to_wait_for_all_files_to_finish_downloading, n)
         log.info('Processing test results...')
-        df_dict = df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
+        async with df_lock:  
+            df_dict = df.copy().replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
         summary_dict = summary_df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
         combined_output_dict = {
             'datetime_test_started': datetime_test_started.strftime('%Y-%m-%dT%H:%M:%S'),
@@ -1637,10 +1688,10 @@ def get_external_ip_func():
     return ip_address
 
 
-def check_if_pasteld_is_running_correctly_and_relaunch_if_required_func():
+async def check_if_pasteld_is_running_correctly_and_relaunch_if_required_func():
     pasteld_running_correctly = 0
     try:
-        current_pastel_block_number = get_current_pastel_block_height_func()
+        current_pastel_block_number = await get_current_pastel_block_height_func()
     except Exception as e:
         log.error(f"Problem running pastel-cli command: {e}")
         current_pastel_block_number = ''
@@ -1686,11 +1737,6 @@ def install_pasteld_func(network_name='testnet'):
             log.error(f"Error running pastelup install command! Message: {e}; Command result: {install_result}")
     return
             
-#_______________________________________________________________________________________________________________________________
-
-rpc_host, rpc_port, rpc_user, rpc_password, other_flags = get_local_rpc_settings_func()
-rpc_connection = AsyncAuthServiceProxy("http://%s:%s@%s:%s"%(rpc_user, rpc_password, rpc_host, rpc_port))
-
 
 def safe_highlight_func(text, pattern, replacement):
     try:
@@ -1733,4 +1779,13 @@ def highlight_rules_func(text):
     text = text.replace('#COLOR12_OPEN#', '<span style="color: #d5f2ea;">').replace('#COLOR12_CLOSE#', '</span>')
     text = text.replace('#COLOR13_OPEN#', '<span style="color: #f2ebd3;">').replace('#COLOR13_CLOSE#', '</span>')
     return text
+
+
+
+#_______________________________________________________________
+
+
+rpc_host, rpc_port, rpc_user, rpc_password, other_flags = get_local_rpc_settings_func()
+rpc_connection = AsyncAuthServiceProxy(f"http://{rpc_user}:{rpc_password}@{rpc_host}:{rpc_port}")
+
 
