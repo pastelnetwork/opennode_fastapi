@@ -118,7 +118,7 @@ async def cleanup_idle_sessions():
             del active_sessions[session]
         await asyncio.sleep(60)
         
-cleanup_task = asyncio.create_task(cleanup_idle_sessions())
+# cleanup_task = asyncio.create_task(cleanup_idle_sessions())
 
 @asynccontextmanager
 async def get_client_session():
@@ -547,9 +547,9 @@ async def get_raw_dd_service_results_from_local_db_func(txid: str) -> Optional[R
         raise e
     
 
-async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type: str, corresponding_pastel_blockchain_ticket_data: dict) -> RawDDServiceData:
+async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type: str, corresponding_pastel_blockchain_ticket_data: dict, client_session) -> RawDDServiceData:
     lock_expiration_time = timedelta(minutes=10)
-    async with db_session.create_async_session() as session, get_client_session() as client_session:
+    async with db_session.create_async_session() as session:
         active_sessions[client_session] = asyncio.get_event_loop().time()
         if not await acquire_dd_service_lock(session, txid, lock_expiration_time):
             return None
@@ -593,9 +593,10 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
             full_stack_trace = traceback.format_exc()
             raise e
         finally:
-            await client_session.close()
+            del active_sessions[client_session]  # Remove the session from active_sessions
+
     
-async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str) -> RawDDServiceData:
+async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str, client_session) -> RawDDServiceData:
     try:
         raw_dd_service_data = await get_raw_dd_service_results_from_local_db_func(txid)
         if raw_dd_service_data:
@@ -610,11 +611,12 @@ async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str)
         else:
             log.warning(f"Unknown ticket type for txid {txid}.")
             ticket_type = 'unknown'
-        raw_dd_service_data = await get_raw_dd_service_results_from_sense_api_func(txid, ticket_type, corresponding_pastel_blockchain_ticket_data)
+        raw_dd_service_data = await get_raw_dd_service_results_from_sense_api_func(txid, ticket_type, corresponding_pastel_blockchain_ticket_data, client_session)
         return raw_dd_service_data, False
     except Exception as e:
         log.error(f"Failed to get raw DD service results for txid {txid} with error: {e}")
         raise e
+
     
 def decompress_and_decode_zstd_compressed_and_base64_encoded_string_func(compressed_b64_string: str) -> str:
     try:
@@ -860,43 +862,42 @@ async def delete_cascade_file_lock_func(session, txid: str):
         await session.commit()
 
 
-async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str, retry_count=0, max_retries=3):
+async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str, client_session, retry_count=0, max_retries=3):
     lock_expiration_time = timedelta(minutes=10)
-    async with get_client_session() as client_session:
-        active_sessions[client_session] = asyncio.get_event_loop().time()
-        if not await acquire_cascade_file_lock(session, txid, lock_expiration_time):
-            return None, None    
-        cache_file_path, decoded_response = None, None
-        try:
-            async with client_session.get(request_url, headers=headers, timeout=600.0) as response:
-                body = await response.read()
-                parsed_response = json.loads(body.decode())
-            if parsed_response.get('name') == 'InternalServerError':
-                log.error(f"Server error during download: {parsed_response.get('message')}")
-                await delete_cascade_file_lock_func(session, txid)
-                return f"Server error: {parsed_response.get('message')}", None
-            if 'file_id' in parsed_response.keys():
-                file_identifier = parsed_response['file_id']
-                file_download_url = f"http://localhost:8080/files/{file_identifier}"
-                async with client_session.get(file_download_url, headers=headers, timeout=500.0) as response:
-                    decoded_response = await response.read()
-                cache_file_path = os.path.join(cache_dir, txid)
-                async with aiofiles.open(cache_file_path, mode='wb') as f:
-                    await f.write(decoded_response)
-            else:
-                log.error("Response did not contain a file_id.")
-                await delete_cascade_file_lock_func(session, txid)
-                return "No file_id in response.", None
-        except Exception as e:
-            log.error(f'Exception during download: {e}')
-            if retry_count < max_retries:
-                await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir, retry_count=retry_count + 1)
-            else:
-                await delete_cascade_file_lock_func(session, txid)
-                await add_bad_txid_to_db_func(session, txid, 'cascade', str(e))
-                return f"Exception occurred: {e}", None
-        finally:
-            await client_session.close()            
+    if not await acquire_cascade_file_lock(session, txid, lock_expiration_time):
+        return None, None
+    active_sessions[client_session] = asyncio.get_event_loop().time()
+    cache_file_path, decoded_response = None, None
+    try:
+        async with client_session.get(request_url, headers=headers, timeout=600.0) as response:
+            body = await response.read()
+            parsed_response = json.loads(body.decode())
+        if parsed_response.get('name') == 'InternalServerError':
+            log.error(f"Server error during download: {parsed_response.get('message')}")
+            await delete_cascade_file_lock_func(session, txid)
+            return f"Server error: {parsed_response.get('message')}", None
+        if 'file_id' in parsed_response.keys():
+            file_identifier = parsed_response['file_id']
+            file_download_url = f"http://localhost:8080/files/{file_identifier}"
+            async with client_session.get(file_download_url, headers=headers, timeout=500.0) as response:
+                decoded_response = await response.read()
+            cache_file_path = os.path.join(cache_dir, txid)
+            async with aiofiles.open(cache_file_path, mode='wb') as f:
+                await f.write(decoded_response)
+        else:
+            log.error("Response did not contain a file_id.")
+            await delete_cascade_file_lock_func(session, txid)
+            return "No file_id in response.", None
+    except Exception as e:
+        log.error(f'Exception during download: {e}')
+        if retry_count < max_retries:
+            await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir, client_session, retry_count=retry_count + 1)
+        else:
+            await delete_cascade_file_lock_func(session, txid)
+            await add_bad_txid_to_db_func(session, txid, 'cascade', str(e))
+            return f"Exception occurred: {e}", None
+    finally:
+        del active_sessions[client_session]
     return cache_file_path, decoded_response
 
 
@@ -957,7 +958,7 @@ async def verify_downloaded_cascade_file_func(file_data, expected_hash, expected
         return error_msg
 
 
-async def   download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str, use_cascade_file_cache: bool = True):
+async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_func(txid: str, use_cascade_file_cache: bool = True):
     global cache
     log.info(f'Starting download process for txid {txid}.')
     try:
@@ -966,7 +967,7 @@ async def   download_publicly_accessible_cascade_file_by_registration_ticket_txi
         requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
         request_url = f'http://localhost:8080/openapi/cascade/download?pid={requester_pastelid}&txid={txid}'
         headers = {'Authorization': 'testpw123'}
-        async with db_session.create_async_session() as session:
+        async with db_session.create_async_session() as session, get_client_session() as client_session:
             check_bad_txid_result = await check_and_update_cascade_ticket_bad_txid_func(session, txid)
             if check_bad_txid_result:
                 log.warning(f'TXID {txid} is marked as bad.')
@@ -980,23 +981,20 @@ async def   download_publicly_accessible_cascade_file_by_registration_ticket_txi
                 log.warning(f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!')
                 return f'The file for the Cascade ticket with registration txid {txid} is not publicly accessible!', ""
             if use_cascade_file_cache:
-                if txid in cache and os.path.exists(cache[txid]):  # Check if the file is already in cache and exists in the cache_dir
+                if txid in cache and os.path.exists(cache[txid]):  
                     log.info(f"File is already cached, returning the cached file for txid {txid}...")
                     async with aiofiles.open(cache[txid], mode='rb') as f:
                         decoded_response = await f.read()
                     return decoded_response, original_file_name_string
             log.info(f'Now attempting to download the file from Cascade API for txid {txid}...')
-            try:
-                cache_file_path, decoded_response = await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir)
-                if cache_file_path is None or decoded_response is None:
-                    log.warning(f"Skipping file download for txid {txid} as it's already in progress.")
-                    return "File download in progress.", ""                          
-                if isinstance(decoded_response, str) and decoded_response.startswith("Error"):
-                    log.error(f'An error occurred while downloading the file for txid {txid}. Error: {decoded_response}')
-                    return decoded_response, ""               
-                decoded_response = await check_and_manage_cascade_file_cache_func(txid, cache_file_path, decoded_response)
-            except Exception as e:
-                log.error(f'An error occurred while downloading the file for txid {txid}. Error: {e}')
+            cache_file_path, decoded_response = await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir, client_session)
+            if cache_file_path is None or decoded_response is None:
+                log.warning(f"Skipping file download for txid {txid} as it's already in progress.")
+                return "File download in progress.", ""                          
+            if isinstance(decoded_response, str) and decoded_response.startswith("Error"):
+                log.error(f'An error occurred while downloading the file for txid {txid}. Error: {decoded_response}')
+                return decoded_response, ""               
+            decoded_response = await check_and_manage_cascade_file_cache_func(txid, cache_file_path, decoded_response)
             try:
                 verification_result = await verify_downloaded_cascade_file_func(decoded_response, original_file_sha3_256_hash, original_file_size_in_bytes, original_file_mime_type)
                 log.info(f'Finished download process for txid {txid} in {time.time() - start_time} seconds.')
@@ -1011,6 +1009,7 @@ async def   download_publicly_accessible_cascade_file_by_registration_ticket_txi
     except Exception as e:
         log.error(f'An unexpected error occurred during download process for txid {txid}. Error: {e}')
         raise
+
 
 async def filter_tickets_to_dataframes(tickets_obj):
     sense_ticket_dict = json.loads(tickets_obj['action'])
@@ -1319,6 +1318,14 @@ async def perform_bulk_cascade_test_download_tasks_func(txids: list, seconds_to_
         download_tasks = [asyncio.create_task(download_cascade_file_test_func(txid)) for txid in txids]
         log.info('Waiting for download tasks to finish...')
         finished, unfinished = await asyncio.wait(download_tasks, timeout=seconds_to_wait_for_all_files_to_finish_downloading)
+        download_data = []
+        for t in finished:
+            try:
+                result = t.result()
+                if result is not None and 'txid' in result:
+                    download_data.append(result)
+            except Exception as e:
+                log.error(f"Task failed: {e}")        
         update_task.cancel()
         try:
             await asyncio.wait([update_task], timeout=600)
@@ -1336,7 +1343,6 @@ async def perform_bulk_cascade_test_download_tasks_func(txids: list, seconds_to_
             async with df_lock:
                 log.info('The status update task was cancelled.')
         log.info('All download tasks finished.')
-        download_data = [t.result() for t in finished if t.result() is not None and 'txid' in t.result()]
         download_df = pd.DataFrame(download_data)
         download_df['log_lines'] = download_df['txid'].map(txid_log_dict)
         download_df['supernode_ips'] = download_df['txid'].apply(lambda x: ", ".join(supernode_ips_dict.get(x, [])))
@@ -1391,32 +1397,41 @@ def create_bulk_cascade_test_summary_stats_func(df: pd.DataFrame, seconds_to_wai
 
 
 async def bulk_test_cascade_func(n: int):
+    combined_output_dict = {}
+    datetime_test_started = datetime.utcnow()
     try:
-        datetime_test_started = datetime.utcnow()
         log.info('Starting bulk test of cascade...')
         txids = await get_random_cascade_txids_func(n)
         log.info(f'Got {len(txids)} txids for testing.')
         seconds_to_wait_for_all_files_to_finish_downloading = 600
         df, txid_log_dict, supernode_ips = await perform_bulk_cascade_test_download_tasks_func(txids, seconds_to_wait_for_all_files_to_finish_downloading)
+    except Exception as e:
+        log.error(f'Error occurred in perform_bulk_cascade_test_download_tasks_func: {e}', exc_info=True)
+        df = None
+    if df is not None:
         if not isinstance(df, pd.DataFrame):
             log.error(f"df is not a DataFrame. It is: {type(df)}")
-            return {}
-        summary_df = create_bulk_cascade_test_summary_stats_func(df.copy(), seconds_to_wait_for_all_files_to_finish_downloading, n)
-        log.info('Processing test results...')
-        async with df_lock:  
-            df_dict = df.copy().replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
-        summary_dict = summary_df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
+        else:
+            summary_df = create_bulk_cascade_test_summary_stats_func(df.copy(), seconds_to_wait_for_all_files_to_finish_downloading, n)
+            log.info('Processing test results...')
+            async with df_lock:
+                df_dict = df.copy().replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
+            summary_dict = summary_df.replace([np.inf, -np.inf], np.nan).fillna('NA').to_dict('records')
+            combined_output_dict = {
+                'datetime_test_started': datetime_test_started.strftime('%Y-%m-%dT%H:%M:%S'),
+                'duration_of_test_in_seconds': round((datetime.utcnow() - datetime_test_started).total_seconds(), 2),
+                'cascade_bulk_download_test_results__data': df_dict,
+                'cascade_bulk_download_test_results__summary': summary_dict
+            }
+    else:
         combined_output_dict = {
             'datetime_test_started': datetime_test_started.strftime('%Y-%m-%dT%H:%M:%S'),
             'duration_of_test_in_seconds': round((datetime.utcnow() - datetime_test_started).total_seconds(), 2),
-            'cascade_bulk_download_test_results__data': df_dict,
-            'cascade_bulk_download_test_results__summary': summary_dict
+            'error': 'perform_bulk_cascade_test_download_tasks_func failed'
         }
-        log.info('Finished bulk test of cascade.')
-        combined_output_dict = await convert_dict_to_make_it_safe_for_json_func(combined_output_dict)
-        return combined_output_dict
-    except Exception as e:
-        log.error(f'Error occurred during the bulk test of cascade: {e}', exc_info=True)
+    log.info('Finished bulk test of cascade.')
+    combined_output_dict = await convert_dict_to_make_it_safe_for_json_func(combined_output_dict)
+    return combined_output_dict
 
 
 async def run_populate_database_with_all_dd_service_data_func():
