@@ -4,6 +4,7 @@ from fastapi import Request
 import logging
 from typing import Callable
 import fastapi
+import os
 from starlette.staticfiles import StaticFiles
 from data import db_session
 from data.db_session import db_write_queue
@@ -59,12 +60,13 @@ async def process_db_queue():
     
 @app.on_event("startup")
 async def start_background_tasks():
-    asyncio.create_task(opennode_fastapi_service.startup_cascade_file_download_lock_cleanup_func())
-    asyncio.create_task(opennode_fastapi_service.startup_dd_service_lock_cleanup_func())
-    asyncio.create_task(process_db_queue())
-    asyncio.create_task(db_session.write_records_to_db_func())
-    asyncio.create_task(run_task_periodically())
-    
+    if os.environ.get("RUN_BACKGROUND_TASKS") == "1":
+        asyncio.create_task(opennode_fastapi_service.startup_cascade_file_download_lock_cleanup_func())
+        asyncio.create_task(opennode_fastapi_service.startup_dd_service_lock_cleanup_func())
+        asyncio.create_task(process_db_queue())
+        asyncio.create_task(db_session.write_records_to_db_func())
+        # asyncio.create_task(run_task_periodically())
+        
 
 def main():
     configure(dev_mode=True)
