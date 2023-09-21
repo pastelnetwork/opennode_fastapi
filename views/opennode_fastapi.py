@@ -1,5 +1,6 @@
 import services.opennode_fastapi_service as service_funcs
 import io
+import os
 import fastapi
 from fastapi import HTTPException, BackgroundTasks, Query
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
@@ -23,6 +24,7 @@ tags_metadata = [
     {"name": "Utility Methods", "description": "Endpoints for various utility functions"},
     {"name": "Control Methods", "description": "Endpoints for various control methods"},
 ]
+
 
 async def handle_exceptions(rpc_method: Callable[..., Any], *args, **kwargs) -> Any:
     try:
@@ -52,42 +54,52 @@ async def getblockchaininfo():
 
 @router.get('/gettxoutsetinfo', tags=["Blockchain Methods"])
 async def gettxoutsetinfo():
+    global rpc_connection
     return await handle_exceptions(rpc_connection.gettxoutsetinfo)
 
 @router.get('/getblockcount', tags=["Blockchain Methods"])
 async def getblockcount():
+    global rpc_connection  
     return await handle_exceptions(rpc_connection.getblockcount)
 
 @router.get('/getchaintips', tags=["Blockchain Methods"])
 async def getchaintips():
+    global rpc_connection
     return await handle_exceptions(rpc_connection.getchaintips)
 
 @router.get('/getdifficulty', tags=["Blockchain Methods"])
 async def getdifficulty():
+    global rpc_connection
     return await handle_exceptions(rpc_connection.getdifficulty)
 
 @router.get('/getmempoolinfo', tags=["Blockchain Methods"])
 async def getmempoolinfo():
+    global rpc_connection
     return await handle_exceptions(rpc_connection.getmempoolinfo)
 
 @router.get('/getrawmempool', tags=["Blockchain Methods"])
 async def getrawmempool():
+    global rpc_connection
     return await handle_exceptions(rpc_connection.getrawmempool)
 
 @router.get('/getblock/{blockhash}', tags=["Blockchain Methods"])
 async def getblock(blockhash: str):
+    global rpc_connection
     return await handle_exceptions(rpc_connection.getblock, blockhash)
 
 @router.get('/getblockheader/{blockhash}', tags=["Blockchain Methods"])
 async def getblockheader(blockhash: str):
+    global rpc_connection
     return await handle_exceptions(rpc_connection.getblockheader, blockhash)
 
 @router.get('/getblockhash/{index}', tags=["Blockchain Methods"])
 async def getblockhash(index: int):
+    global rpc_connection
     return await handle_exceptions(rpc_connection.getblockhash, index)
 
 @router.get('/gettxout/{txid}/{vout_value}', tags=["Blockchain Methods"])
 async def gettxout(txid: str, vout_value: int, includemempool: bool = True):
+    global rpc_connection
     return await handle_exceptions(rpc_connection.gettxout, txid, vout_value, includemempool)
 
 @router.get('/gettxoutproof/{txid}', tags=["Blockchain Methods"])
@@ -341,8 +353,9 @@ async def populate_database_with_all_dd_service_data(background_tasks: Backgroun
         return fastapi.Response(content=str(x), status_code=500)
 
 @router.get('/run_bulk_test_cascade/{num_downloads}', tags=["OpenAPI Methods"])
-async def run_bulk_test_cascade(num_downloads: int = Query(5, description="Number of concurrent Cascade downloads to launch for test. Default is 5.")):
-    return await handle_exceptions(service_funcs.bulk_test_cascade_func, num_downloads)
+async def run_bulk_test_cascade(num_downloads: int):
+    if os.environ.get("RUN_BACKGROUND_TASKS") == "1":
+        return await handle_exceptions(service_funcs.bulk_test_cascade_func, num_downloads)
 
 @router.get("/show_logs_incremental/{minutes}/{last_position}", response_model=ShowLogsIncrementalModel)
 def show_logs_incremental(minutes: int, last_position: int):
@@ -534,3 +547,8 @@ def show_logs(minutes: int = 5):
 @router.get("/show_logs", response_class=HTMLResponse)
 def show_logs_default():
     return show_logs(5)
+
+
+# if __name__ == "__main__":
+rpc_host, rpc_port, rpc_user, rpc_password, other_flags = service_funcs.get_local_rpc_settings_func()
+rpc_connection = service_funcs.AsyncAuthServiceProxy(f"http://{rpc_user}:{rpc_password}@{rpc_host}:{rpc_port}")
