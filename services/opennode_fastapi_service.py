@@ -1122,7 +1122,7 @@ async def convert_dict_to_make_it_safe_for_json_func(combined_output_dict):
 
 
 async def get_random_cascade_txids_func(n: int) -> List[str]:
-    min_block_height = 325000
+    min_block_height = 315000
     log.info(f'Attempting to get {n} random cascade TXIDs...')
     tickets_obj = await get_all_pastel_blockchain_tickets_func()
     cascade_ticket_dict = json.loads(tickets_obj['action'])
