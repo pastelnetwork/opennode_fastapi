@@ -19,7 +19,6 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from pathlib import Path
-from contextlib import asynccontextmanager
 import aiofiles
 import dirtyjson
 import magic
@@ -120,12 +119,40 @@ async def cleanup_idle_sessions():
         
 # cleanup_task = asyncio.create_task(cleanup_idle_sessions())
 
-@asynccontextmanager
-async def get_client_session():
-    connector = aiohttp.TCPConnector(limit=1000)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        active_sessions[session] = asyncio.get_event_loop().time()  # Add session to active_sessions
-        yield session
+class ClientSessionManager:
+    def __init__(self, stale_timeout: timedelta = timedelta(minutes=15)):
+        self.client_session: Optional[aiohttp.ClientSession] = None
+        self.last_used: datetime = datetime.min
+        self.stale_timeout = stale_timeout
+
+    async def is_valid_session(self, session: aiohttp.ClientSession) -> bool:
+        try:
+            async with session.get('http://microsoft.com', timeout=5) as response:
+                return response.status == 200
+        except Exception:
+            return False
+
+    async def get_or_create_session(self) -> aiohttp.ClientSession:
+        now = datetime.utcnow()
+        if self.client_session and (now - self.last_used < self.stale_timeout) and await self.is_valid_session(self.client_session):
+            self.last_used = now
+            return self.client_session
+        await self.close_session()  # Close the existing invalid or stale session, if any
+        self.last_used = now
+        return await self.create_session()
+
+    async def create_session(self) -> aiohttp.ClientSession:
+        connector = aiohttp.TCPConnector(limit=1000)
+        self.client_session = aiohttp.ClientSession(connector=connector)
+        return self.client_session
+
+    async def close_session(self):
+        if self.client_session:
+            await self.client_session.close()
+            self.client_session = None
+
+
+session_manager = ClientSessionManager() # Initialize global session manager
         
 def parse_mime_type(mime_type):
     return tuple(mime_type.split(';')[0].split('/'))
@@ -547,12 +574,12 @@ async def get_raw_dd_service_results_from_local_db_func(txid: str) -> Optional[R
         raise e
     
 
-async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type: str, corresponding_pastel_blockchain_ticket_data: dict, client_session) -> RawDDServiceData:
+async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type: str, corresponding_pastel_blockchain_ticket_data: dict) -> RawDDServiceData:
     lock_expiration_time = timedelta(minutes=10)
     async with db_session.create_async_session() as session:
-        active_sessions[client_session] = asyncio.get_event_loop().time()
         if not await acquire_dd_service_lock(session, txid, lock_expiration_time):
             return None
+        client_session = await session_manager.get_or_create_session()
         try:
             requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
             if ticket_type == 'sense':
@@ -591,12 +618,11 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
             async with db_session.create_async_session() as session:
                 await delete_dd_service_lock(session, txid)
             full_stack_trace = traceback.format_exc()
+            log.error(f"An exception occurred while attempting to get raw DD service results from Sense API for txid {txid}: {e}\n{full_stack_trace}")
             raise e
-        finally:
-            del active_sessions[client_session]  # Remove the session from active_sessions
 
     
-async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str, client_session) -> RawDDServiceData:
+async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str) -> RawDDServiceData:
     try:
         raw_dd_service_data = await get_raw_dd_service_results_from_local_db_func(txid)
         if raw_dd_service_data:
@@ -611,7 +637,7 @@ async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str,
         else:
             log.warning(f"Unknown ticket type for txid {txid}.")
             ticket_type = 'unknown'
-        raw_dd_service_data = await get_raw_dd_service_results_from_sense_api_func(txid, ticket_type, corresponding_pastel_blockchain_ticket_data, client_session)
+        raw_dd_service_data = await get_raw_dd_service_results_from_sense_api_func(txid, ticket_type, corresponding_pastel_blockchain_ticket_data)
         return raw_dd_service_data, False
     except Exception as e:
         log.error(f"Failed to get raw DD service results for txid {txid} with error: {e}")
@@ -763,8 +789,7 @@ async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: s
     parsed_data, is_cached = await check_for_parsed_dd_service_result_in_db_func(txid)
     if is_cached:
         return parsed_data, True
-    async with get_client_session() as client_session:
-        raw_data, _ = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid, client_session)
+    raw_data, _ = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid)
     parsed_data = await parse_raw_dd_service_data_func(raw_data)
     _, is_cached = await check_for_parsed_dd_service_result_in_db_func(txid)
     if not is_cached:
@@ -863,11 +888,11 @@ async def delete_cascade_file_lock_func(session, txid: str):
         await session.commit()
 
 
-async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str, client_session, retry_count=0, max_retries=3):
+async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str, retry_count=0, max_retries=3):
     lock_expiration_time = timedelta(minutes=10)
     if not await acquire_cascade_file_lock(session, txid, lock_expiration_time):
         return None, None
-    active_sessions[client_session] = asyncio.get_event_loop().time()
+    client_session = await session_manager.get_or_create_session()
     cache_file_path, decoded_response = None, None
     try:
         async with client_session.get(request_url, headers=headers, timeout=600.0) as response:
@@ -892,13 +917,11 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
     except Exception as e:
         log.error(f'Exception during download: {e}')
         if retry_count < max_retries:
-            await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir, client_session, retry_count=retry_count + 1)
+            await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir, retry_count=retry_count + 1)
         else:
             await delete_cascade_file_lock_func(session, txid)
             await add_bad_txid_to_db_func(session, txid, 'cascade', str(e))
             return f"Exception occurred: {e}", None
-    finally:
-        del active_sessions[client_session]
     return cache_file_path, decoded_response
 
 
@@ -968,7 +991,7 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
         requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
         request_url = f'http://localhost:8080/openapi/cascade/download?pid={requester_pastelid}&txid={txid}'
         headers = {'Authorization': 'testpw123'}
-        async with db_session.create_async_session() as session, get_client_session() as client_session:
+        async with db_session.create_async_session() as session:
             check_bad_txid_result = await check_and_update_cascade_ticket_bad_txid_func(session, txid)
             if check_bad_txid_result:
                 log.warning(f'TXID {txid} is marked as bad.')
@@ -988,7 +1011,7 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
                         decoded_response = await f.read()
                     return decoded_response, original_file_name_string
             log.info(f'Now attempting to download the file from Cascade API for txid {txid}...')
-            cache_file_path, decoded_response = await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir, client_session)
+            cache_file_path, decoded_response = await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir)
             if cache_file_path is None or decoded_response is None:
                 log.warning(f"Skipping file download for txid {txid} as it's already in progress.")
                 return "File download in progress.", ""                          
