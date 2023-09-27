@@ -763,7 +763,8 @@ async def get_parsed_dd_service_results_by_registration_ticket_txid_func(txid: s
     parsed_data, is_cached = await check_for_parsed_dd_service_result_in_db_func(txid)
     if is_cached:
         return parsed_data, True
-    raw_data, _ = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid)
+    async with get_client_session() as client_session:
+        raw_data, _ = await get_raw_dd_service_results_by_registration_ticket_txid_func(txid, client_session)
     parsed_data = await parse_raw_dd_service_data_func(raw_data)
     _, is_cached = await check_for_parsed_dd_service_result_in_db_func(txid)
     if not is_cached:
