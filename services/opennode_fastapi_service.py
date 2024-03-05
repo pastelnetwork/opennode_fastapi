@@ -76,7 +76,7 @@ for handler in log.handlers[:]:
 log.setLevel(logging.INFO)
 log_folder = Path('old_application_log_files')
 log_folder.mkdir(parents=True, exist_ok=True)
-log_file_full_path = log_folder / 'pastel_portal_log.txt'
+log_file_full_path = log_folder / 'opennode_fastapi_log.txt'
 rotating_handler = RotatingFileHandler(log_file_full_path, maxBytes=5*1024*1024, backupCount=10)
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
