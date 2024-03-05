@@ -1,5 +1,4 @@
 aiofiles
-aiohttp
 aiosqlite
 asyncio
 beautifulsoup4

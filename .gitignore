@@ -49,7 +49,8 @@ coverage.xml
 docs/_build/
 
 #JE stuff:
-db/
+db/*
 uploaded_image_files/
 venv/
 .env
+old_application_log_files/

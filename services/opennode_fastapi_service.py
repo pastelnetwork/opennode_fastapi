@@ -1,5 +1,4 @@
 import asyncio
-import aiohttp
 import base64
 import decimal
 import hashlib
@@ -126,37 +125,23 @@ async def cleanup_idle_sessions():
 # cleanup_task = asyncio.create_task(cleanup_idle_sessions())
 
 class ClientSessionManager:
-    def __init__(self, stale_timeout: timedelta = timedelta(minutes=15)):
-        self.client_session: Optional[aiohttp.ClientSession] = None
-        self.last_used: datetime = datetime.min
-        self.stale_timeout = stale_timeout
+    def __init__(self, max_connections: int = 100, max_keepalive_connections: int = 10):
+        self.client_session: Optional[AsyncClient] = None
+        self.max_connections = max_connections
+        self.max_keepalive_connections = max_keepalive_connections
 
-    async def is_valid_session(self, session: aiohttp.ClientSession) -> bool:
-        try:
-            async with session.get('http://microsoft.com', timeout=5) as response:
-                return response.status == 200
-        except Exception:
-            return False
-
-    async def get_or_create_session(self) -> aiohttp.ClientSession:
-        now = datetime.utcnow()
-        if self.client_session and (now - self.last_used < self.stale_timeout) and await self.is_valid_session(self.client_session):
-            self.last_used = now
-            return self.client_session
-        await self.close_session()  # Close the existing invalid or stale session, if any
-        self.last_used = now
-        return await self.create_session()
-
-    async def create_session(self) -> aiohttp.ClientSession:
-        connector = aiohttp.TCPConnector(limit=1000)
-        self.client_session = aiohttp.ClientSession(connector=connector)
+    async def get_or_create_session(self) -> AsyncClient:
+        if self.client_session is None:
+            self.client_session = AsyncClient(
+                timeout=Timeout(600),
+                limits=Limits(max_connections=self.max_connections, max_keepalive_connections=self.max_keepalive_connections)
+            )
         return self.client_session
 
     async def close_session(self):
         if self.client_session:
-            await self.client_session.close()
+            await self.client_session.aclose()
             self.client_session = None
-
 
 session_manager = ClientSessionManager() # Initialize global session manager
         
@@ -578,40 +563,48 @@ async def get_raw_dd_service_results_from_local_db_func(txid: str) -> Optional[R
     except Exception as e:
         log.error(f"An exception occurred while attempting to get raw DD service results from local DB for txid {txid}: {e}")
         raise e
-    
+
 async def get_storage_challenges_metrics_func(metric_type_string='summary_stats', results_count=50):
     client_session = await session_manager.get_or_create_session()
-    from_datetime_string = (datetime.now() - timedelta(weeks=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    if metric_type_string == 'detailed_log':
-        request_url = f'http://localhost:8080/storage_challenges/detailed_logs?pid={REQUESTER_PASTELID}&count={results_count}'
-    elif metric_type_string == 'summary_stats':
-        request_url = f'http://localhost:8080/storage_challenges/summary_stats?pid={REQUESTER_PASTELID}&from={from_datetime_string}'
-    else:
-        raise ValueError(f'Invalid storage-challenge metrics type for {metric_type_string}! Must be "detailed_log" or "summary_stats"!')
-    headers = {'Authorization': REQUESTER_PASTELID_PASSPHRASE}
-    async with client_session.get(request_url, headers=headers, timeout=250) as response:
-        if response.status != 200:
-            raise ValueError(f"Received {response.status} from storage challenges metrics API.")
-        body = await response.read()
-    parsed_response = json.loads(body.decode())    
-    return parsed_response
+    try:
+        from_datetime_string = (datetime.now() - timedelta(weeks=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        if metric_type_string == 'detailed_log':
+            request_url = f'http://localhost:8080/storage_challenges/detailed_logs?pid={REQUESTER_PASTELID}&count={results_count}'
+        elif metric_type_string == 'summary_stats':
+            request_url = f'http://localhost:8080/storage_challenges/summary_stats?pid={REQUESTER_PASTELID}&from={from_datetime_string}'
+        else:
+            raise ValueError(f'Invalid storage-challenge metrics type for {metric_type_string}! Must be "detailed_log" or "summary_stats"!')
+        headers = {'Authorization': REQUESTER_PASTELID_PASSPHRASE}
+        response = await client_session.get(request_url, headers=headers, timeout=250)
+        if response.status_code != 200:
+            raise ValueError(f"Received {response.status_code} from storage challenges metrics API.")
+        body = response.content
+        parsed_response = json.loads(body.decode())    
+        return parsed_response
+    except Exception as e:
+        log.error(f'Exception in get_storage_challenges_metrics_func: {e}')
+        raise e
 
 async def get_self_healing_metrics_func(metric_type_string='summary_stats', results_count=50):
     client_session = await session_manager.get_or_create_session()
-    from_datetime_string = (datetime.now() - timedelta(weeks=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    if metric_type_string == 'detailed_log':
-        request_url = f'http://localhost:8080/self_healing/detailed_logs?pid={REQUESTER_PASTELID}&count={results_count}'
-    elif metric_type_string == 'summary_stats':
-        request_url = f'http://localhost:8080/self_healing/summary_stats?pid={REQUESTER_PASTELID}&from={from_datetime_string}'
-    else:
-        raise ValueError(f'Invalid self-healing metrics type for {metric_type_string}! Must be "detailed_log" or "summary_stats"!')
-    headers = {'Authorization': REQUESTER_PASTELID_PASSPHRASE}
-    async with client_session.get(request_url, headers=headers, timeout=250) as response:
-        if response.status != 200:
-            raise ValueError(f"Received {response.status} from self-healing metrics API.")
-        body = await response.read()
-    parsed_response = json.loads(body.decode())    
-    return parsed_response
+    try:
+        from_datetime_string = (datetime.now() - timedelta(weeks=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        if metric_type_string == 'detailed_log':
+            request_url = f'http://localhost:8080/self_healing/detailed_logs?pid={REQUESTER_PASTELID}&count={results_count}'
+        elif metric_type_string == 'summary_stats':
+            request_url = f'http://localhost:8080/self_healing/summary_stats?pid={REQUESTER_PASTELID}&from={from_datetime_string}'
+        else:
+            raise ValueError(f'Invalid self-healing metrics type for {metric_type_string}! Must be "detailed_log" or "summary_stats"!')
+        headers = {'Authorization': REQUESTER_PASTELID_PASSPHRASE}
+        response = await client_session.get(request_url, headers=headers, timeout=250)
+        if response.status_code != 200:
+            raise ValueError(f"Received {response.status_code} from self-healing metrics API.")
+        body = response.content
+        parsed_response = json.loads(body.decode())    
+        return parsed_response
+    except Exception as e:
+        log.error(f'Exception in get_self_healing_metrics_func: {e}')
+        raise e
 
 async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type: str, corresponding_pastel_blockchain_ticket_data: dict) -> RawDDServiceData:
     lock_expiration_time = timedelta(minutes=10)
@@ -627,10 +620,10 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
             else:
                 raise ValueError(f'Invalid ticket type for txid {txid}! Ticket type must be "sense" or "nft"!')
             headers = {'Authorization': REQUESTER_PASTELID_PASSPHRASE}
-            async with client_session.get(request_url, headers=headers, timeout=250) as response:
-                if response.status != 200:
-                    raise ValueError(f"Received {response.status} from {ticket_type} API.")
-                body = await response.read()
+            response = await client_session.get(request_url, headers=headers, timeout=250)
+            if response.status_code != 200:
+                raise ValueError(f"Received {response.status_code} from {ticket_type} API.")
+            body = response.content
             parsed_response = json.loads(body.decode())
             if 'file' not in parsed_response:
                 raise ValueError(f'No file was returned from the {ticket_type} API for txid {txid}!')
@@ -660,8 +653,7 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
             full_stack_trace = traceback.format_exc()
             log.error(f"An exception occurred while attempting to get raw DD service results from Sense API for txid {txid}: {e}\n{full_stack_trace}")
             raise e
-
-    
+        
 async def get_raw_dd_service_results_by_registration_ticket_txid_func(txid: str) -> RawDDServiceData:
     try:
         raw_dd_service_data = await get_raw_dd_service_results_from_local_db_func(txid)
@@ -927,17 +919,16 @@ async def delete_cascade_file_lock_func(session, txid: str):
         await session.delete(lock_exists)
         await session.commit()
 
-
 async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str, retry_count=0, max_retries=3):
     lock_expiration_time = timedelta(minutes=10)
     if not await acquire_cascade_file_lock(session, txid, lock_expiration_time):
         return None, None
     client_session = await session_manager.get_or_create_session()
-    cache_file_path, decoded_response = None, None
     try:
-        async with client_session.get(request_url, headers=headers, timeout=600.0) as response:
-            body = await response.read()
-            parsed_response = json.loads(body.decode())
+        cache_file_path, decoded_response = None, None
+        response = await client_session.get(request_url, headers=headers, timeout=600.0)
+        body = response.content
+        parsed_response = json.loads(body.decode())
         if parsed_response.get('name') == 'InternalServerError':
             log.error(f"Server error during download: {parsed_response.get('message')}")
             await delete_cascade_file_lock_func(session, txid)
@@ -945,8 +936,8 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
         if 'file_id' in parsed_response.keys():
             file_identifier = parsed_response['file_id']
             file_download_url = f"http://localhost:8080/files/{file_identifier}"
-            async with client_session.get(file_download_url, headers=headers, timeout=500.0) as response:
-                decoded_response = await response.read()
+            response = await client_session.get(file_download_url, headers=headers, timeout=500.0)
+            decoded_response = response.content
             cache_file_path = os.path.join(cache_dir, txid)
             async with aiofiles.open(cache_file_path, mode='wb') as f:
                 await f.write(decoded_response)
@@ -957,13 +948,12 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
     except Exception as e:
         log.error(f'Exception during download: {e}')
         if retry_count < max_retries:
-            await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir, retry_count=retry_count + 1)
+            return await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir, retry_count=retry_count + 1)
         else:
             await delete_cascade_file_lock_func(session, txid)
             await add_bad_txid_to_db_func(session, txid, 'cascade', str(e))
             return f"Exception occurred: {e}", None
     return cache_file_path, decoded_response
-
 
 async def check_and_manage_cascade_file_cache_func(txid: str, cache_file_path: str, decoded_response):
     cache[txid] = cache_file_path  # Update LRU cache
