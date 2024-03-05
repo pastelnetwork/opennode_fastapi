@@ -256,9 +256,9 @@ async def find_action_activation_ticket_by_pastelid(pastelid: str):
 async def get_ticket_by_txid(txid: str):
     return await handle_exceptions(service_funcs.get_pastel_blockchain_ticket_func, txid)
 
-# Endpoint for detailed_logs from storage challenges metrics
+# Endpoint for detailed_logs from storage challenges metrics with default count
 @router.get('/get_storage_challenges_metrics/detailed_logs/{count}', tags=["Supernode Methods"])
-async def get_storage_challenges_metrics_detailed_logs(count: int):
+async def get_storage_challenges_metrics_detailed_logs(count: int = 25):  # Default count set to 25
     return await handle_exceptions(service_funcs.get_storage_challenges_metrics_func, 'detailed_log', count)
 
 # Endpoint for summary_stats from storage challenges metrics
@@ -268,7 +268,7 @@ async def get_storage_challenges_metrics_summary_stats():
 
 # Endpoint for detailed_logs from self-healing metrics, with results count
 @router.get('/get_self_healing_metrics/detailed_logs/{count}', tags=["Supernode Methods"])
-async def get_self_healing_metrics_detailed_logs(count: int):
+async def get_self_healing_metrics_detailed_logs(count: int = 25): # Default count set to 25
     return await handle_exceptions(service_funcs.get_self_healing_metrics_func, 'detailed_log', count)
 
 # Endpoint for summary_stats from self-healing metrics

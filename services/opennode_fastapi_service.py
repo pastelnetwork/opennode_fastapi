@@ -578,17 +578,17 @@ async def get_storage_challenges_metrics_func(metric_type_string='summary_stats'
         response = await client_session.get(request_url, headers=headers, timeout=250)
         if response.status_code != 200:
             raise ValueError(f"Received {response.status_code} from storage challenges metrics API.")
-        body = response.content
+        body = await response.aread()
         parsed_response = json.loads(body.decode())    
         return parsed_response
     except Exception as e:
         log.error(f'Exception in get_storage_challenges_metrics_func: {e}')
         raise e
-
+    
 async def get_self_healing_metrics_func(metric_type_string='summary_stats', results_count=50):
     client_session = await session_manager.get_or_create_session()
     try:
-        from_datetime_string = (datetime.now() - timedelta(weeks=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        from_datetime_string = (datetime.now() - timedelta(weeks=4)).strftime('%Y-%m-%dT%H:%M:%SZ')
         if metric_type_string == 'detailed_log':
             request_url = f'http://localhost:8080/self_healing/detailed_logs?pid={REQUESTER_PASTELID}&count={results_count}'
         elif metric_type_string == 'summary_stats':
@@ -599,7 +599,7 @@ async def get_self_healing_metrics_func(metric_type_string='summary_stats', resu
         response = await client_session.get(request_url, headers=headers, timeout=250)
         if response.status_code != 200:
             raise ValueError(f"Received {response.status_code} from self-healing metrics API.")
-        body = response.content
+        body = await response.aread()
         parsed_response = json.loads(body.decode())    
         return parsed_response
     except Exception as e:
@@ -919,10 +919,11 @@ async def delete_cascade_file_lock_func(session, txid: str):
         await session.delete(lock_exists)
         await session.commit()
 
-async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, session, cache_dir: str, retry_count=0, max_retries=3):
+async def download_and_cache_cascade_file_func(txid: str, request_url: str, headers, cache_dir: str, retry_count=0, max_retries=3):
     lock_expiration_time = timedelta(minutes=10)
-    if not await acquire_cascade_file_lock(session, txid, lock_expiration_time):
-        return None, None
+    async with db_session.create_async_session() as session:
+        if not await acquire_cascade_file_lock(session, txid, lock_expiration_time):
+            return None, None
     client_session = await session_manager.get_or_create_session()
     try:
         cache_file_path, decoded_response = None, None
@@ -931,7 +932,8 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
         parsed_response = json.loads(body.decode())
         if parsed_response.get('name') == 'InternalServerError':
             log.error(f"Server error during download: {parsed_response.get('message')}")
-            await delete_cascade_file_lock_func(session, txid)
+            async with db_session.create_async_session() as session:
+                await delete_cascade_file_lock_func(session, txid)
             return f"Server error: {parsed_response.get('message')}", None
         if 'file_id' in parsed_response.keys():
             file_identifier = parsed_response['file_id']
@@ -943,15 +945,17 @@ async def download_and_cache_cascade_file_func(txid: str, request_url: str, head
                 await f.write(decoded_response)
         else:
             log.error("Response did not contain a file_id.")
-            await delete_cascade_file_lock_func(session, txid)
+            async with db_session.create_async_session() as session:
+                await delete_cascade_file_lock_func(session, txid)
             return "No file_id in response.", None
     except Exception as e:
         log.error(f'Exception during download: {e}')
         if retry_count < max_retries:
-            return await download_and_cache_cascade_file_func(txid, request_url, headers, session, cache_dir, retry_count=retry_count + 1)
+            return await download_and_cache_cascade_file_func(txid, request_url, headers, cache_dir, retry_count=retry_count + 1)
         else:
-            await delete_cascade_file_lock_func(session, txid)
-            await add_bad_txid_to_db_func(session, txid, 'cascade', str(e))
+            async with db_session.create_async_session() as session:
+                await delete_cascade_file_lock_func(session, txid)
+                await add_bad_txid_to_db_func(session, txid, 'cascade', str(e))
             return f"Exception occurred: {e}", None
     return cache_file_path, decoded_response
 

@@ -54,3 +54,4 @@ uploaded_image_files/
 venv/
 .env
 old_application_log_files/
+db/opennode_fastapi.sqlite
