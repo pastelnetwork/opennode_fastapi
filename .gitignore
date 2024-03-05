@@ -52,3 +52,4 @@ docs/_build/
 db/
 uploaded_image_files/
 venv/
+.env

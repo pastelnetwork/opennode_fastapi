@@ -47,6 +47,12 @@ except ImportError:
 import logging
 from logging.handlers import RotatingFileHandler
 
+from decouple import Config as DecoupleConfig, RepositoryEnv
+
+config = DecoupleConfig(RepositoryEnv('.env'))
+REQUESTER_PASTELID = config.get("PASTELID")
+REQUESTER_PASTELID_PASSPHRASE = config.get("PASTELID_PASSPHRASE")
+
 #You must install libmagic with: sudo apt-get install libmagic-dev
 number_of_cpus = os.cpu_count()
 my_os = platform.system()
@@ -573,6 +579,39 @@ async def get_raw_dd_service_results_from_local_db_func(txid: str) -> Optional[R
         log.error(f"An exception occurred while attempting to get raw DD service results from local DB for txid {txid}: {e}")
         raise e
     
+async def get_storage_challenges_metrics_func(metric_type_string='summary_stats', results_count=50):
+    client_session = await session_manager.get_or_create_session()
+    from_datetime_string = (datetime.now() - timedelta(weeks=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    if metric_type_string == 'detailed_log':
+        request_url = f'http://localhost:8080/storage_challenges/detailed_logs?pid={REQUESTER_PASTELID}&count={results_count}'
+    elif metric_type_string == 'summary_stats':
+        request_url = f'http://localhost:8080/storage_challenges/summary_stats?pid={REQUESTER_PASTELID}&from={from_datetime_string}'
+    else:
+        raise ValueError(f'Invalid storage-challenge metrics type for {metric_type_string}! Must be "detailed_log" or "summary_stats"!')
+    headers = {'Authorization': REQUESTER_PASTELID_PASSPHRASE}
+    async with client_session.get(request_url, headers=headers, timeout=250) as response:
+        if response.status != 200:
+            raise ValueError(f"Received {response.status} from storage challenges metrics API.")
+        body = await response.read()
+    parsed_response = json.loads(body.decode())    
+    return parsed_response
+
+async def get_self_healing_metrics_func(metric_type_string='summary_stats', results_count=50):
+    client_session = await session_manager.get_or_create_session()
+    from_datetime_string = (datetime.now() - timedelta(weeks=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    if metric_type_string == 'detailed_log':
+        request_url = f'http://localhost:8080/self_healing/detailed_logs?pid={REQUESTER_PASTELID}&count={results_count}'
+    elif metric_type_string == 'summary_stats':
+        request_url = f'http://localhost:8080/self_healing/summary_stats?pid={REQUESTER_PASTELID}&from={from_datetime_string}'
+    else:
+        raise ValueError(f'Invalid self-healing metrics type for {metric_type_string}! Must be "detailed_log" or "summary_stats"!')
+    headers = {'Authorization': REQUESTER_PASTELID_PASSPHRASE}
+    async with client_session.get(request_url, headers=headers, timeout=250) as response:
+        if response.status != 200:
+            raise ValueError(f"Received {response.status} from self-healing metrics API.")
+        body = await response.read()
+    parsed_response = json.loads(body.decode())    
+    return parsed_response
 
 async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type: str, corresponding_pastel_blockchain_ticket_data: dict) -> RawDDServiceData:
     lock_expiration_time = timedelta(minutes=10)
@@ -581,19 +620,20 @@ async def get_raw_dd_service_results_from_sense_api_func(txid: str, ticket_type:
             return None
         client_session = await session_manager.get_or_create_session()
         try:
-            requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
             if ticket_type == 'sense':
-                request_url = f'http://localhost:8080/openapi/sense/download?pid={requester_pastelid}&txid={txid}'
+                request_url = f'http://localhost:8080/openapi/sense/download?pid={REQUESTER_PASTELID}&txid={txid}'
             elif ticket_type == 'nft':
-                request_url = f'http://localhost:8080/nfts/download?pid={requester_pastelid}&txid={txid}'
+                request_url = f'http://localhost:8080/nfts/download?pid={REQUESTER_PASTELID}&txid={txid}'
             else:
                 raise ValueError(f'Invalid ticket type for txid {txid}! Ticket type must be "sense" or "nft"!')
-            headers = {'Authorization': 'testpw123'}
+            headers = {'Authorization': REQUESTER_PASTELID_PASSPHRASE}
             async with client_session.get(request_url, headers=headers, timeout=250) as response:
                 if response.status != 200:
                     raise ValueError(f"Received {response.status} from {ticket_type} API.")
                 body = await response.read()
             parsed_response = json.loads(body.decode())
+            if 'file' not in parsed_response:
+                raise ValueError(f'No file was returned from the {ticket_type} API for txid {txid}!')
             if parsed_response['file'] is None:
                 raise ValueError(f'No file was returned from the {ticket_type} API for txid {txid}!')
             decoded_response = base64.b64decode(parsed_response['file'])
@@ -658,7 +698,7 @@ def safe_json_loads_func(json_string: str) -> dict:
         return loaded_json
     except Exception as e:
         log.error(f"Encountered an error while trying to parse json_string: {e}")
-        loaded_json = dirtyjson.loads(json_string.replace('\\"', '"').replace('\/', '/').replace('\\n', ' '))
+        loaded_json = dirtyjson.loads(json_string.replace('\\"', '"').replace('/', '/').replace('\\n', ' '))
         return loaded_json
 
 def cast_numpy_types_for_serialization(obj):
@@ -988,9 +1028,8 @@ async def download_publicly_accessible_cascade_file_by_registration_ticket_txid_
     try:
         await load_cache()
         start_time = time.time()
-        requester_pastelid = 'jXYwVLikSSJfoX7s4VpX3osfMWnBk3Eahtv5p1bYQchaMiMVzAmPU57HMA7fz59ffxjd2Y57b9f7oGqfN5bYou'
-        request_url = f'http://localhost:8080/openapi/cascade/download?pid={requester_pastelid}&txid={txid}'
-        headers = {'Authorization': 'testpw123'}
+        request_url = f'http://localhost:8080/openapi/cascade/download?pid={REQUESTER_PASTELID}&txid={txid}'
+        headers = {'Authorization': REQUESTER_PASTELID_PASSPHRASE}
         async with db_session.create_async_session() as session:
             check_bad_txid_result = await check_and_update_cascade_ticket_bad_txid_func(session, txid)
             if check_bad_txid_result:

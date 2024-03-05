@@ -2,8 +2,11 @@ import services.opennode_fastapi_service as service_funcs
 import io
 import os
 import fastapi
-from fastapi import HTTPException, BackgroundTasks, Query
-from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
+import json
+import tempfile
+import pandas as pd
+from fastapi import HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, FileResponse
 from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel
 from json import JSONEncoder
 from datetime import datetime, timedelta
@@ -253,6 +256,26 @@ async def find_action_activation_ticket_by_pastelid(pastelid: str):
 async def get_ticket_by_txid(txid: str):
     return await handle_exceptions(service_funcs.get_pastel_blockchain_ticket_func, txid)
 
+# Endpoint for detailed_logs from storage challenges metrics
+@router.get('/get_storage_challenges_metrics/detailed_logs/{count}', tags=["Supernode Methods"])
+async def get_storage_challenges_metrics_detailed_logs(count: int):
+    return await handle_exceptions(service_funcs.get_storage_challenges_metrics_func, 'detailed_log', count)
+
+# Endpoint for summary_stats from storage challenges metrics
+@router.get('/get_storage_challenges_metrics/summary_stats', tags=["Supernode Methods"])
+async def get_storage_challenges_metrics_summary_stats():
+    return await handle_exceptions(service_funcs.get_storage_challenges_metrics_func, 'summary_stats')
+
+# Endpoint for detailed_logs from self-healing metrics, with results count
+@router.get('/get_self_healing_metrics/detailed_logs/{count}', tags=["Supernode Methods"])
+async def get_self_healing_metrics_detailed_logs(count: int):
+    return await handle_exceptions(service_funcs.get_self_healing_metrics_func, 'detailed_log', count)
+
+# Endpoint for summary_stats from self-healing metrics
+@router.get('/get_self_healing_metrics/summary_stats', tags=["Supernode Methods"])
+async def get_self_healing_metrics_summary_stats():
+    return await handle_exceptions(service_funcs.get_self_healing_metrics_func, 'summary_stats')
+
 # High-Level Methods
 @router.get('/get_all_ticket_data', tags=["High-Level Methods"])
 async def get_all_ticket_data():
@@ -261,6 +284,24 @@ async def get_all_ticket_data():
 @router.get('/supernode_data', tags=["High-Level Methods"])
 async def supernode_data():
     return await handle_exceptions(service_funcs.check_supernode_list_func)
+
+@router.get('/supernode_data_csv', tags=["High-Level Methods"])
+async def supernode_data_csv():
+    supernode_data_json = await handle_exceptions(service_funcs.check_supernode_list_func)
+    supernode_data_dict = json.loads(supernode_data_json)
+    keys = supernode_data_dict.keys()
+    values = [value for value in supernode_data_dict.values()]
+    supernode_data_dict_df = pd.DataFrame(values)
+    supernode_data_dict_df['txid-vout'] = keys
+    supernode_data_dict_df.set_index('txid-vout', inplace=True)
+    supernode_data_dict_df['lastseentime'] = supernode_data_dict_df['lastseentime'].apply(lambda x: x.strftime("%Y-%m-%d %H:%M:%S"))
+    supernode_data_dict_df['lastpaidtime'] = supernode_data_dict_df['lastpaidtime'].apply(lambda x: x.strftime("%Y-%m-%d %H:%M:%S"))
+    supernode_data_dict_df['ip_address'] = supernode_data_dict_df['ip_address'].apply(lambda x: x.split(':')[0])
+    temp_file, temp_file_path = tempfile.mkstemp(suffix=".csv")
+    with os.fdopen(temp_file, 'w') as tmp:
+        supernode_data_dict_df.to_csv(tmp)    
+    current_datetime_string = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    return FileResponse(path=temp_file_path, media_type='application/octet-stream', filename=f"pastel_supernode_data__{current_datetime_string}.csv")
 
 @router.get('/get_network_storage_fees', tags=["High-Level Methods"])
 async def get_network_storage_fees():
