@@ -159,7 +159,7 @@ def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~
         lines = f.readlines()
     other_flags = {}
     rpchost = '127.0.0.1'
-    rpcport = '19932'
+    rpcport = '9932'
     for line in lines:
         if line.startswith('rpcport'):
             value = line.split('=')[1]

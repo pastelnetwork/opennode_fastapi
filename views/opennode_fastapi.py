@@ -294,9 +294,10 @@ async def supernode_data_csv():
     supernode_data_dict_df = pd.DataFrame(values)
     supernode_data_dict_df['txid-vout'] = keys
     supernode_data_dict_df.set_index('txid-vout', inplace=True)
-    supernode_data_dict_df['lastseentime'] = supernode_data_dict_df['lastseentime'].apply(lambda x: x.strftime("%Y-%m-%d %H:%M:%S"))
-    supernode_data_dict_df['lastpaidtime'] = supernode_data_dict_df['lastpaidtime'].apply(lambda x: x.strftime("%Y-%m-%d %H:%M:%S"))
-    supernode_data_dict_df['ip_address'] = supernode_data_dict_df['ip_address'].apply(lambda x: x.split(':')[0])
+    current_time = pd.Timestamp.utcnow()  # Get the current UTC time as a Timestamp
+    supernode_data_dict_df['lastseentime_datetime'] = current_time - pd.to_timedelta(supernode_data_dict_df['activeseconds'], unit='s')
+    supernode_data_dict_df['lastseentime_datetime'] = supernode_data_dict_df['lastseentime_datetime'].dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    supernode_data_dict_df['ip_address'] = supernode_data_dict_df['ipaddress:port'].apply(lambda x: x.split(':')[0])
     temp_file, temp_file_path = tempfile.mkstemp(suffix=".csv")
     with os.fdopen(temp_file, 'w') as tmp:
         supernode_data_dict_df.to_csv(tmp)    
