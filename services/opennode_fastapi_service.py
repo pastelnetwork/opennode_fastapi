@@ -1864,6 +1864,35 @@ async def get_block_deltas_func(block_hash):
     block_deltas_data = await rpc_connection.getblockdeltas(block_hash)
     return block_deltas_data
 
+async def get_address_txids_func(params):
+    global rpc_connection
+    address_txids_data = await rpc_connection.getaddresstxids(params)
+    return address_txids_data
+
+async def get_address_balance_func(params):
+    global rpc_connection
+    address_balance_data = await rpc_connection.getaddressbalance(params)
+    return address_balance_data
+
+async def get_address_deltas_func(params):
+    global rpc_connection
+    address_deltas_data = await rpc_connection.getaddressdeltas(params)
+    return address_deltas_data
+
+async def get_address_utxos_func(params):
+    global rpc_connection
+    address_utxos_data = await rpc_connection.getaddressutxos(params)
+    return address_utxos_data
+
+async def get_spent_info_func(params):
+    global rpc_connection
+    spent_info_data = await rpc_connection.getspentinfo(params)
+    return spent_info_data
+
+async def get_block_hashes_func(high, low, options=None):
+    global rpc_connection
+    block_hashes_data = await rpc_connection.getblockhashes(high, low, options)
+    return block_hashes_data
 
 #_______________________________________________________________
 

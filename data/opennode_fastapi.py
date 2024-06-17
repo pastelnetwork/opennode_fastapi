@@ -1,7 +1,7 @@
 import sqlalchemy as sa
 from data.modelbase import SqlAlchemyBase
 from sqlalchemy import Column, String, DateTime
-from typing import List
+from typing import List, Optional
 import datetime
 from pydantic import BaseModel
 
@@ -120,3 +120,29 @@ class AddressMempool(BaseModel):
 
 class BlockDeltasResponse(BaseModel):
     data: dict
+
+class AddressTxIdsParams(BaseModel):
+    addresses: List[str]
+    start: Optional[int] = None
+    end: Optional[int] = None
+
+class AddressBalanceParams(BaseModel):
+    addresses: List[str]
+
+class AddressDeltasParams(BaseModel):
+    addresses: List[str]
+    start: Optional[int] = None
+    end: Optional[int] = None
+    chainInfo: Optional[bool] = False
+
+class AddressUtxosParams(BaseModel):
+    addresses: List[str]
+    chainInfo: Optional[bool] = False
+
+class SpentInfoParams(BaseModel):
+    txid: str
+    index: int
+
+class BlockHashesOptions(BaseModel):
+    noOrphans: Optional[bool] = None
+    logicalTimes: Optional[bool] = None

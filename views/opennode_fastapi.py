@@ -5,9 +5,10 @@ import fastapi
 import json
 import tempfile
 import pandas as pd
-from fastapi import HTTPException, BackgroundTasks
+from typing import List
+from fastapi import HTTPException, BackgroundTasks, Query
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, FileResponse
-from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel, BlockDeltasResponse, AddressMempool
+from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel, BlockDeltasResponse, AddressMempool, AddressTxIdsParams, AddressBalanceParams, AddressDeltasParams, AddressUtxosParams, SpentInfoParams, BlockHashesOptions
 from json import JSONEncoder
 from datetime import datetime, timedelta
 from pytz import timezone
@@ -411,10 +412,9 @@ async def get_address_mempool_endpoint(addresses: str):
     transaction ID (if spending), and previous output index (if spending).
 
     Note: The `getaddressmempool` RPC method is disabled by default. To enable it, you need to restart
-    `pasteld` with the `-experimentalfeatures` and `-insightexplorer` command-line options, or add the
+    `pasteld` with the `-insightexplorer` command-line options, or add the
     following lines to the `pastel.conf` file:
     ```
-    experimentalfeatures=1
     insightexplorer=1
     ```
 
@@ -459,10 +459,9 @@ async def get_block_deltas_endpoint(block_hash: str):
     and indexes).
 
     Note: The `getblockdeltas` RPC method is disabled by default. To enable it, you need to restart
-    `pasteld` with the `-experimentalfeatures` and `-insightexplorer` command-line options, or add the
+    `pasteld` with the `-insightexplorer` command-line options, or add the
     following lines to the `pastel.conf` file:
     ```
-    experimentalfeatures=1
     insightexplorer=1
     ```
 
@@ -526,6 +525,216 @@ async def get_block_deltas_endpoint(block_hash: str):
         }
     """
     return await handle_exceptions(service_funcs.get_block_deltas_func, block_hash)
+
+@router.get("/get_address_txids", tags=["Insight Explorer Methods"])
+async def get_address_txids_endpoint(addresses: List[str] = Query(...), start: Optional[int] = None, end: Optional[int] = None):
+    """
+    Returns the transaction ids for given transparent addresses within the given (inclusive)
+    block height range, default is the full blockchain.
+
+    Returned txids are in the order they appear in blocks, which
+    ensures that they are topologically sorted (i.e. parent txids will appear before child txids).
+
+    Args:
+        addresses (List[str], query parameter): A list of base58check encoded addresses.
+        start (int, optional, query parameter): The start block height. Default is None.
+        end (int, optional, query parameter): The end block height. Default is None.
+
+    Returns:
+        List[str]: A list of transaction ids.
+
+    Examples:
+        >>> from httpx import get
+        >>> response = get("http://localhost:8000/get_address_txids?addresses=PtczsZ91Bt3oDPDQotzUsrx1wjmsFVgf28n&start=1000&end=2000")
+        >>> response.json()
+        [
+            "txid1",
+            "txid2",
+            ...
+        ]
+    """
+    params = {"addresses": addresses, "start": start, "end": end}
+    return await handle_exceptions(service_funcs.get_address_txids_func, params)
+
+@router.get("/get_address_balance", tags=["Insight Explorer Methods"])
+async def get_address_balance_endpoint(addresses: List[str] = Query(...)):
+    """
+    Returns the balance for addresses.
+
+    Args:
+        addresses (List[str], query parameter): A list of base58check encoded addresses.
+
+    Returns:
+        dict: A dictionary containing the balance and received amounts.
+            balance (str): The current balance in patoshis.
+            received (str): The total number of patoshis received (including change).
+
+    Examples:
+        >>> from httpx import get
+        >>> response = get("http://localhost:8000/get_address_balance?addresses=tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ")
+        >>> response.json()
+        {
+            "balance": "1000",
+            "received": "2000"
+        }
+    """
+    params = {"addresses": addresses}
+    return await handle_exceptions(service_funcs.get_address_balance_func, params)
+
+@router.get("/get_address_deltas", tags=["Insight Explorer Methods"])
+async def get_address_deltas_endpoint(addresses: List[str] = Query(...), start: Optional[int] = None, end: Optional[int] = None, chainInfo: bool = False):
+    """
+    Returns all changes for an address.
+
+    Returns information about all changes to the given transparent addresses within the given (inclusive)
+    block height range, default is the full blockchain.
+
+    Args:
+        addresses (List[str], query parameter): A list of base58check encoded addresses.
+        start (int, optional, query parameter): The start block height. Default is None.
+        end (int, optional, query parameter): The end block height. Default is None.
+        chainInfo (bool, optional, query parameter): Include chain info in results, only applies if start and end specified. Default is false.
+
+    Returns:
+        List[dict] or dict: A list of address deltas or a dictionary containing address deltas and chain info.
+            patoshis (int): The difference of patoshis.
+            txid (str): The related txid.
+            index (int): The related input or output index.
+            height (int): The block height.
+            address (str): The base58check encoded address.
+
+    Examples:
+        >>> from httpx import get
+        >>> response = get("http://localhost:8000/get_address_deltas?addresses=tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ&start=1000&end=2000&chainInfo=true")
+        >>> response.json()
+        {
+            "deltas": [
+                {
+                    "patoshis": 1000,
+                    "txid": "txid1",
+                    "index": 0,
+                    "height": 1500,
+                    "address": "tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ"
+                },
+                ...
+            ],
+            "start": {
+                "hash": "start_block_hash",
+                "height": 1000
+            },
+            "end": {
+                "hash": "end_block_hash",
+                "height": 2000
+            }
+        }
+    """
+    params = {"addresses": addresses, "start": start, "end": end, "chainInfo": chainInfo}
+    return await handle_exceptions(service_funcs.get_address_deltas_func, params)
+
+@router.get("/get_address_utxos", tags=["Insight Explorer Methods"])
+async def get_address_utxos_endpoint(addresses: List[str] = Query(...), chainInfo: bool = False):
+    """
+    Returns all unspent outputs for an address.
+
+    Args:
+        addresses (List[str], query parameter): A list of base58check encoded addresses.
+        chainInfo (bool, optional, query parameter): Include chain info with results. Default is false.
+
+    Returns:
+        List[dict] or dict: A list of unspent outputs or a dictionary containing unspent outputs and chain info.
+            address (str): The address base58check encoded.
+            txid (str): The output txid.
+            height (int): The block height.
+            outputIndex (int): The output index.
+            script (str): The script hex encoded.
+            patoshis (int): The number of patoshis of the output.
+
+    Examples:
+        >>> from httpx import get
+        >>> response = get("http://localhost:8000/get_address_utxos?addresses=tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ&chainInfo=true")
+        >>> response.json()
+        {
+            "utxos": [
+                {
+                    "address": "tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ",
+                    "txid": "txid1",
+                    "height": 1500,
+                    "outputIndex": 0,
+                    "script": "script_hex",
+                    "patoshis": 1000
+                },
+                ...
+            ],
+            "hash": "block_hash",
+            "height": 2000
+        }
+    """
+    params = {"addresses": addresses, "chainInfo": chainInfo}
+    return await handle_exceptions(service_funcs.get_address_utxos_func, params)
+
+@router.get("/get_spent_info", tags=["Insight Explorer Methods"])
+async def get_spent_info_endpoint(txid: str, index: int):
+    """
+    Returns the txid and index where an output is spent.
+
+    Args:
+        txid (str, query parameter): The hex string of the transaction id.
+        index (int, query parameter): The vout (output) index.
+
+    Returns:
+        dict: A dictionary containing the spending transaction id and input index.
+            txid (str): The transaction id.
+            index (int): The spending (vin, input) index.
+
+    Examples:
+        >>> from httpx import get
+        >>> response = get("http://localhost:8000/get_spent_info?txid=33990288fb116981260be1de10b8c764f997674545ab14f9240f00346333b780&index=4")
+        >>> response.json()
+        {
+            "txid": "spending_txid",
+            "index": 0
+        }
+    """
+    params = {"txid": txid, "index": index}
+    return await handle_exceptions(service_funcs.get_spent_info_func, params)
+
+@router.get("/get_block_hashes", tags=["Insight Explorer Methods"])
+async def get_block_hashes_endpoint(high: int, low: int, noOrphans: Optional[bool] = None, logicalTimes: Optional[bool] = None):
+    """
+    Returns array of hashes of blocks within the timestamp range provided,
+    greater or equal to low, less than high.
+
+    Args:
+        high (int, query parameter): The newer block timestamp.
+        low (int, query parameter): The older block timestamp.
+        noOrphans (bool, optional, query parameter): Will only include blocks on the main chain. Default is None.
+        logicalTimes (bool, optional, query parameter): Will include logical timestamps with hashes. Default is None.
+
+    Returns:
+        List[str] or List[dict]: An array of block hashes or an array of objects containing block hashes and logical timestamps.
+
+    Examples:
+        >>> from httpx import get
+        >>> response = get("http://localhost:8000/get_block_hashes?high=1558141697&low=1558141576")
+        >>> response.json()
+        [
+            "block_hash_1",
+            "block_hash_2",
+            ...
+        ]
+
+        >>> response = get("http://localhost:8000/get_block_hashes?high=1558141697&low=1558141576&noOrphans=false&logicalTimes=true")
+        >>> response.json()
+        [
+            {
+                "blockhash": "block_hash_1",
+                "logicalts": 1558141580
+            },
+            ...
+        ]
+    """
+    options = {"noOrphans": noOrphans, "logicalTimes": logicalTimes}
+    return await handle_exceptions(service_funcs.get_block_hashes_func, high, low, options)
 
 @router.get("/show_logs_incremental/{minutes}/{last_position}", response_model=ShowLogsIncrementalModel)
 def show_logs_incremental(minutes: int, last_position: int):
