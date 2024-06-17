@@ -373,7 +373,8 @@ async def get_current_total_number_of_registered_sense_fingerprints():
 
 @router.get('/get_current_total_number_and_size_and_average_size_of_registered_cascade_files/', tags=["OpenAPI Methods"])
 async def get_current_total_number_and_size_and_average_size_of_registered_cascade_files():
-    return await handle_exceptions(service_funcs.get_current_total_number_and_size_and_average_size_of_registered_cascade_files_func)
+    # return await handle_exceptions(service_funcs.get_current_total_number_and_size_and_average_size_of_registered_cascade_files_func)
+    return await service_funcs.get_current_total_number_and_size_and_average_size_of_registered_cascade_files_func()
 
 @router.get('/get_usernames_from_pastelid/{pastelid}', tags=["OpenAPI Methods"])
 async def get_usernames_from_pastelid(pastelid : str):

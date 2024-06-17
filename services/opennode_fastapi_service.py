@@ -1674,10 +1674,16 @@ async def get_current_total_number_and_size_and_average_size_of_registered_casca
     file_type_counter = {}
     for idx, current_txid in enumerate(list_of_cascade_registration_ticket_txids):
         current_api_ticket = list_of_cascade_action_tickets[idx]
-        decoded_action_ticket = json.loads(base64.b64decode(current_api_ticket).decode('utf-8'))
+        try:
+            decoded_action_ticket = json.loads(base64.b64decode(current_api_ticket).decode('utf-8'))
+        except Exception as e:  # noqa: F841
+            continue
         api_ticket = decoded_action_ticket['api_ticket']
         api_ticket += "=" * (-len(api_ticket) % 4)
-        api_ticket_decoded = json.loads(base64.b64decode(api_ticket).decode('utf-8'))
+        try:
+            api_ticket_decoded = json.loads(base64.b64decode(api_ticket).decode('utf-8'))
+        except Exception as e:  # noqa: F841
+            continue
         if api_ticket_decoded is not None:
             if len(api_ticket_decoded) == 9:
                 file_counter += 1
