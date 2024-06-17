@@ -37,7 +37,7 @@ from data.opennode_fastapi import (
     CascadeCacheFileLocks,
     DdServiceLocks,
     ParsedDDServiceData,
-    RawDDServiceData,
+    RawDDServiceData    
 )
 try:
     import urllib.parse as urlparse
@@ -159,27 +159,29 @@ def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~
         lines = f.readlines()
     other_flags = {}
     rpchost = '127.0.0.1'
-    rpcport = '9932'
+    rpcport = '19932'
+    rpcuser = None
+    rpcpassword = None
     for line in lines:
-        if line.startswith('rpcport'):
-            value = line.split('=')[1]
-            rpcport = value.strip()
-        elif line.startswith('rpcuser'):
-            value = line.split('=')[1]
-            rpcuser = value.strip()
-        elif line.startswith('rpcpassword'):
-            value = line.split('=')[1]
-            rpcpassword = value.strip()
-        elif line.startswith('rpchost'):
-            pass
-        elif line == '\n':
-            pass
-        else:
-            current_flag = line.strip().split('=')[0].strip()
-            current_value = line.strip().split('=')[1].strip()
-            other_flags[current_flag] = current_value
+        line = line.strip()
+        if not line or line.startswith('#'):  # Ignore blank lines and comments
+            continue
+        if '=' in line:
+            key, value = line.split('=', 1)  # Split only on the first '='
+            key = key.strip()
+            value = value.strip()
+            if key == 'rpcport':
+                rpcport = value
+            elif key == 'rpcuser':
+                rpcuser = value
+            elif key == 'rpcpassword':
+                rpcpassword = value
+            elif key == 'rpchost':
+                rpchost = value
+            else:
+                other_flags[key] = value
     return rpchost, rpcport, rpcuser, rpcpassword, other_flags
-    
+
 def get_remote_rpc_settings_func():
     rpchost = '45.67.221.205'
     #rpchost = '209.145.54.164'
@@ -213,7 +215,7 @@ def EncodeDecimal(o):
     raise TypeError(repr(o) + " is not JSON serializable")
     
 class AsyncAuthServiceProxy:
-    max_concurrent_requests = 5000
+    max_concurrent_requests = 500
     _semaphore = asyncio.BoundedSemaphore(max_concurrent_requests)
     def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2, request_timeout=20):
         self.service_url = service_url
@@ -1852,6 +1854,15 @@ def highlight_rules_func(text):
     text = text.replace('#COLOR13_OPEN#', '<span style="color: #f2ebd3;">').replace('#COLOR13_CLOSE#', '</span>')
     return text
 
+async def get_address_mempool_func(addresses):
+    global rpc_connection
+    address_mempool_data = await rpc_connection.getaddressmempool(addresses)
+    return address_mempool_data
+
+async def get_block_deltas_func(block_hash):
+    global rpc_connection
+    block_deltas_data = await rpc_connection.getblockdeltas(block_hash)
+    return block_deltas_data
 
 
 #_______________________________________________________________

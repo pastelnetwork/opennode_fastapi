@@ -7,7 +7,7 @@ import tempfile
 import pandas as pd
 from fastapi import HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, FileResponse
-from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel
+from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel, BlockDeltasResponse, AddressMempool
 from json import JSONEncoder
 from datetime import datetime, timedelta
 from pytz import timezone
@@ -26,6 +26,8 @@ tags_metadata = [
     {"name": "Raw Transaction Methods", "description": "Endpoints for working with raw transactions"},
     {"name": "Utility Methods", "description": "Endpoints for various utility functions"},
     {"name": "Control Methods", "description": "Endpoints for various control methods"},
+    {"name": "Insight Explorer Methods", "description": "Endpoints for Insight Explorer related data"},
+    
 ]
 
 
@@ -399,6 +401,132 @@ async def run_bulk_test_cascade(num_downloads: int):
     if os.environ.get("RUN_BACKGROUND_TASKS") == "1":
         return await handle_exceptions(service_funcs.bulk_test_cascade_func, num_downloads)
 
+@router.get("/get_address_mempool", tags=["Insight Explorer Methods"])
+async def get_address_mempool_endpoint(addresses: str):
+    """
+    Returns all mempool deltas for the specified addresses.
+
+    This endpoint retrieves information about the changes in the mempool for the given addresses.
+    It provides details such as the transaction ID, index, amount (patoshis), timestamp, previous
+    transaction ID (if spending), and previous output index (if spending).
+
+    Note: The `getaddressmempool` RPC method is disabled by default. To enable it, you need to restart
+    `pasteld` with the `-experimentalfeatures` and `-insightexplorer` command-line options, or add the
+    following lines to the `pastel.conf` file:
+    ```
+    experimentalfeatures=1
+    insightexplorer=1
+    ```
+
+    Args:
+        addresses (str): A comma-separated list of base58check encoded addresses.
+
+    Returns:
+        BlockDeltasResponse: A list of mempool deltas for the specified addresses.
+
+    Raises:
+        HTTPException: If an error occurs while processing the request.
+
+    Examples:
+        >>> from httpx import get
+        >>> response = get("http://localhost:8000/get_address_mempool?addresses=tPp3pfmLi57S8qoccfWnn2o4tXyoQ23wVSp,tQm5Z5X7ZRnD5cLH5jUPCzLWQRKEDcVP9tC")
+        >>> response.json()
+        {
+            "data": [
+                {
+                    "address": "tPp3pfmLi57S8qoccfWnn2o4tXyoQ23wVSp",
+                    "txid": "1a2b3c...",
+                    "index": 0,
+                    "patoshis": 1000,
+                    "timestamp": 1623456789,
+                    "prevtxid": "4d5e6f...",
+                    "prevout": 1
+                }
+            ]
+        }
+    """
+    address_list = addresses.split(",")
+    return await handle_exceptions(service_funcs.get_address_mempool_func, {"addresses": address_list})
+
+@router.get("/get_block_deltas/{block_hash}", tags=["Insight Explorer Methods"])
+async def get_block_deltas_endpoint(block_hash: str):
+    """
+    Returns the transaction IDs and indexes where outputs are spent for a given block.
+
+    This endpoint retrieves the block deltas for a specified block hash. It provides information
+    about the transactions within the block, including the transaction IDs, indexes, inputs (addresses,
+    amounts, previous transaction IDs, and previous output indexes), and outputs (addresses, amounts,
+    and indexes).
+
+    Note: The `getblockdeltas` RPC method is disabled by default. To enable it, you need to restart
+    `pasteld` with the `-experimentalfeatures` and `-insightexplorer` command-line options, or add the
+    following lines to the `pastel.conf` file:
+    ```
+    experimentalfeatures=1
+    insightexplorer=1
+    ```
+
+    Args:
+        block_hash (str): The block hash.
+
+    Returns:
+        BlockDeltasResponse: The block deltas for the specified block hash.
+
+    Raises:
+        HTTPException: If an error occurs while processing the request.
+
+    Examples:
+        >>> from httpx import get
+        >>> response = get("http://localhost:8000/get_block_deltas/00227e566682aebd6a7a5b772c96d7a999cadaebeaf1ce96f4191a3aad58b00b")
+        >>> response.json()
+        {
+            "data": {
+                "hash": "00227e566682aebd6a7a5b772c96d7a999cadaebeaf1ce96f4191a3aad58b00b",
+                "confirmations": 5,
+                "size": 250,
+                "height": 1000,
+                "version": 4,
+                "merkleroot": "1a2b3c...",
+                "deltas": [
+                    {
+                        "txid": "4d5e6f...",
+                        "index": 0,
+                        "inputs": [
+                            {
+                                "address": "tPp3pfmLi57S8qoccfWnn2o4tXyoQ23wVSp",
+                                "patoshis": -1000,
+                                "index": 0,
+                                "prevtxid": "7a8b9c...",
+                                "prevout": 2
+                            }
+                        ],
+                        "outputs": [
+                            {
+                                "address": "tQm5Z5X7ZRnD5cLH5jUPCzLWQRKEDcVP9tC",
+                                "patoshis": 500,
+                                "index": 0
+                            },
+                            {
+                                "address": "tPp3pfmLi57S8qoccfWnn2o4tXyoQ23wVSp",
+                                "patoshis": 500,
+                                "index": 1
+                            }
+                        ]
+                    }
+                ],
+                "time": 1623456789,
+                "mediantime": 1623456780,
+                "nonce": "1a2b3c...",
+                "bits": "1d00ffff",
+                "difficulty": 1,
+                "chainwork": "0000000000000000000000000000000000000000000000000000000000000002",
+                "previousblockhash": "1a2b3c...",
+                "nextblockhash": "4d5e6f..."
+            }
+        }
+    """
+    return await handle_exceptions(service_funcs.get_block_deltas_func, block_hash)
+
 @router.get("/show_logs_incremental/{minutes}/{last_position}", response_model=ShowLogsIncrementalModel)
 def show_logs_incremental(minutes: int, last_position: int):
     new_logs = []
@@ -427,7 +555,6 @@ def show_logs_incremental(minutes: int, last_position: int):
         new_logs_as_string = ""
         last_position = 0
     return {"logs": new_logs_as_string, "last_position": last_position}  # also return the last position
-
 
 @router.get("/show_logs/{minutes}", response_class=HTMLResponse)
 def show_logs(minutes: int = 5):

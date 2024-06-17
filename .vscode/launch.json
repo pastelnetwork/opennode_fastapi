@@ -7,7 +7,7 @@
             "request": "launch",
             "module": "uvicorn",
             "env": {"RUN_BACKGROUND_TASKS": "1"},
-            "args": ["main:app","--port", "8002", "--workers", "1", "--host", "opennode-fastapi-testnet.pastel.network"]
+            "args": ["main:app","--port", "8002", "--workers", "1", "--host", "opennode-fastapi.pastel.network"]
             // "args": ["main:app","--reload", "--port", "8002", "--reload-include", "*.pt", "--workers", "1", "--host", "opennode-fastapi-testnet.pastel.network"]
         }
     ]

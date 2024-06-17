@@ -13,8 +13,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from services import opennode_fastapi_service
 from multiprocessing import freeze_support
 from fastapi import BackgroundTasks
-import nest_asyncio
-nest_asyncio.apply()
 
 description_string = """
 🎢 Pastel's OpenNode FastAPI provides various informational API endpoints to retrieve information about the Pastel Blockchain. 💸

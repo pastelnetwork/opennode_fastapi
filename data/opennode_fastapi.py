@@ -1,6 +1,7 @@
 import sqlalchemy as sa
 from data.modelbase import SqlAlchemyBase
 from sqlalchemy import Column, String, DateTime
+from typing import List
 import datetime
 from pydantic import BaseModel
 
@@ -113,3 +114,9 @@ class ShowLogsIncrementalModel(BaseModel):
     
 class LogLines(BaseModel):
     last_lines: str
+
+class AddressMempool(BaseModel):
+    addresses: List[str]
+
+class BlockDeltasResponse(BaseModel):
+    data: dict
