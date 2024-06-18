@@ -259,6 +259,26 @@ async def find_action_activation_ticket_by_pastelid(pastelid: str):
 async def get_ticket_by_txid(txid: str):
     return await handle_exceptions(service_funcs.get_pastel_blockchain_ticket_func, txid)
 
+@router.get('/tickets/contract/list/{ticket_type_identifier}/{starting_block_height}', tags=["Ticket Methods"])
+async def list_contract_tickets(ticket_type_identifier: str, starting_block_height: int = 0):
+    return await handle_exceptions(service_funcs.list_contract_tickets_func, ticket_type_identifier, starting_block_height)
+
+@router.get('/tickets/contract/find/{key}', tags=["Ticket Methods"])
+async def find_contract_ticket(key: str):
+    return await handle_exceptions(service_funcs.find_contract_ticket_func, key)
+
+@router.get('/tickets/contract/get/{txid}', tags=["Ticket Methods"])
+async def get_contract_ticket(txid: str, decode_properties: bool = True):
+    return await handle_exceptions(service_funcs.get_contract_ticket_func, txid, decode_properties)
+
+@router.get('/tickets/id/is_registered/{pastel_id}', tags=["Ticket Methods"])
+async def is_pastel_id_registered(pastel_id: str):
+    return await handle_exceptions(service_funcs.is_pastel_id_registered_func, pastel_id)
+
+@router.get('/tickets/id/list/{filter}/{minheight}', tags=["Ticket Methods"])
+async def list_pastel_id_tickets(filter: str = "mine", minheight: int = None):
+    return await handle_exceptions(service_funcs.list_pastel_id_tickets_func, filter, minheight)
+
 # Endpoint for detailed_logs from storage challenges metrics with default count
 @router.get('/get_storage_challenges_metrics/detailed_logs/{count}', tags=["Supernode Methods"])
 async def get_storage_challenges_metrics_detailed_logs(count: int = 25):  # Default count set to 25

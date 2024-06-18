@@ -1900,6 +1900,57 @@ async def get_block_hashes_func(high, low, options=None):
     block_hashes_data = await rpc_connection.getblockhashes(high, low, options)
     return block_hashes_data
 
+async def is_pastel_id_registered_func(pastel_id):
+    global rpc_connection
+    try:
+        ticket_find_result = await rpc_connection.tickets("find", "id", pastel_id)
+        return len(ticket_find_result) > 0
+    except JSONRPCException as e:
+        log.error(f"Error checking if Pastel ID is registered: {str(e)}")
+        return False
+    
+async def list_contract_tickets_func(ticket_type_identifier, starting_block_height):
+    global rpc_connection
+    result = await rpc_connection.tickets("list", "contract", ticket_type_identifier, starting_block_height)
+    return result
+
+async def find_contract_ticket_func(key):
+    global rpc_connection
+    result = await rpc_connection.tickets("find", "contract", key)
+    return result
+
+async def get_contract_ticket_func(txid, decode_properties):
+    global rpc_connection
+    result = await rpc_connection.tickets("get", txid, decode_properties)
+    if result and result.ticket and result.ticket.contract_ticket:
+        return result.ticket.contract_ticket
+    else:
+        return None
+
+async def list_pastel_id_tickets_func(filter, minheight):
+    global rpc_connection
+    if filter != "mine":
+        params = [filter]
+        if minheight is not None:
+            params.append(minheight)
+        result = await rpc_connection.tickets("list", "id", *params)
+        return result
+    else:
+        pastel_ids = await rpc_connection.pastelid("list")
+        registered_tickets = []
+        for pastel_id_obj in pastel_ids:
+            pastel_id = pastel_id_obj["PastelID"]
+            try:
+                ticket = await rpc_connection.tickets("find", "id", pastel_id)
+                if ticket and ticket.ticket:
+                    if minheight is None or ticket.height >= minheight:
+                        registered_tickets.append(ticket)
+            except JSONRPCException as e:
+                if "ticket not found" in str(e):
+                    continue
+                else:
+                    raise e
+        return registered_tickets
 #_______________________________________________________________
 
 
