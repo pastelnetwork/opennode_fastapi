@@ -8,7 +8,7 @@ dirtyjson
 fastapi
 fastapi-chameleon
 html5lib
-httpx
+httpx[http2]
 lxml
 nest_asyncio
 pandas

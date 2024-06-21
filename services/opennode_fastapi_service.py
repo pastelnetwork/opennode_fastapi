@@ -29,6 +29,7 @@ from cachetools import LRUCache
 from httpx import AsyncClient, Limits, Timeout
 from sqlalchemy.future import select
 from sqlalchemy.exc import OperationalError, IntegrityError, DBAPIError
+from urllib.parse import urlparse
 
 from data import db_session
 from data.db_session import add_record_to_write_queue
@@ -39,10 +40,6 @@ from data.opennode_fastapi import (
     ParsedDDServiceData,
     RawDDServiceData    
 )
-try:
-    import urllib.parse as urlparse
-except ImportError:
-    import urlparse
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -215,12 +212,13 @@ def EncodeDecimal(o):
         return float(round(o, 8))
     raise TypeError(repr(o) + " is not JSON serializable")
 
+
 class AsyncAuthServiceProxy:
     _semaphore = asyncio.BoundedSemaphore(MAXIMUM_NUMBER_OF_CONCURRENT_RPC_REQUESTS)
     def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2, request_timeout=90):
         self.service_url = service_url
         self.service_name = service_name
-        self.url = urlparse.urlparse(service_url)        
+        self.url = urlparse(service_url)
         self.id_count = 0
         user = self.url.username
         password = self.url.password
@@ -229,6 +227,7 @@ class AsyncAuthServiceProxy:
         self.reconnect_timeout = reconnect_timeout
         self.reconnect_amount = reconnect_amount
         self.request_timeout = request_timeout
+        self.client = AsyncClient(timeout=request_timeout, http2=True)
 
     def __getattr__(self, name):
         if name.startswith('__') and name.endswith('__'):
@@ -238,7 +237,7 @@ class AsyncAuthServiceProxy:
         return AsyncAuthServiceProxy(self.service_url, name)
 
     async def __call__(self, *args):
-        async with self._semaphore: # Acquire a semaphore
+        async with self._semaphore:  # Acquire a semaphore
             self.id_count += 1
             postdata = json.dumps({
                 'version': '2.0',
@@ -249,9 +248,9 @@ class AsyncAuthServiceProxy:
             headers = {
                 'Host': self.url.hostname,
                 'User-Agent': "AuthServiceProxy/0.1",
-                'Authorization': self.auth_header,
+                'Authorization': self.auth_header.decode(),
                 'Content-type': 'application/json',
-                'Connection': 'keep-alive'
+                'Connection': 'keep-alive'  # Crucial for maintaining keep-alive behavior
             }
             for i in range(self.reconnect_amount):
                 try:
@@ -260,8 +259,13 @@ class AsyncAuthServiceProxy:
                         sleep_time = self.reconnect_timeout * (2 ** i)
                         log.info(f"Waiting for {sleep_time} seconds before retrying.")
                         await asyncio.sleep(sleep_time)
-                    response = await self._client.post(
-                        self.service_url, headers=headers, data=postdata)
+                    response = await self.client.post(
+                        self.service_url,
+                        headers=headers,
+                        content=postdata
+                    )
+                    response.raise_for_status()
+                    response_json = response.json()
                     break
                 except Exception as e:
                     log.error(f"Error occurred in __call__: {e}")
@@ -273,7 +277,6 @@ class AsyncAuthServiceProxy:
             else:
                 log.error("Reconnect tries exceeded.")
                 return
-            response_json = response.json()
             if response_json['error'] is not None:
                 raise JSONRPCException(response_json['error'])
             elif 'result' not in response_json:
@@ -281,6 +284,8 @@ class AsyncAuthServiceProxy:
                     'code': -343, 'message': 'missing JSON-RPC result'})
             else:
                 return response_json['result']
+    async def close(self):
+        await self.client.aclose()
         
 async def get_current_pastel_block_height_func():
     global rpc_connection
