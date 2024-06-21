@@ -51,6 +51,7 @@ from decouple import Config as DecoupleConfig, RepositoryEnv
 config = DecoupleConfig(RepositoryEnv('.env'))
 REQUESTER_PASTELID = config.get("PASTELID")
 REQUESTER_PASTELID_PASSPHRASE = config.get("PASTELID_PASSPHRASE")
+MAXIMUM_NUMBER_OF_CONCURRENT_RPC_REQUESTS = config.get("MAXIMUM_NUMBER_OF_CONCURRENT_RPC_REQUESTS", cast=int, default=500)
 
 #You must install libmagic with: sudo apt-get install libmagic-dev
 number_of_cpus = os.cpu_count()
@@ -213,15 +214,13 @@ def EncodeDecimal(o):
     if isinstance(o, decimal.Decimal):
         return float(round(o, 8))
     raise TypeError(repr(o) + " is not JSON serializable")
-    
+
 class AsyncAuthServiceProxy:
-    max_concurrent_requests = 500
-    _semaphore = asyncio.BoundedSemaphore(max_concurrent_requests)
-    def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2, request_timeout=20):
+    _semaphore = asyncio.BoundedSemaphore(MAXIMUM_NUMBER_OF_CONCURRENT_RPC_REQUESTS)
+    def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2, request_timeout=90):
         self.service_url = service_url
         self.service_name = service_name
         self.url = urlparse.urlparse(service_url)        
-        self.client = AsyncClient(timeout=Timeout(request_timeout), limits=Limits(max_connections=200, max_keepalive_connections=10))
         self.id_count = 0
         user = self.url.username
         password = self.url.password
@@ -242,7 +241,7 @@ class AsyncAuthServiceProxy:
         async with self._semaphore: # Acquire a semaphore
             self.id_count += 1
             postdata = json.dumps({
-                'version': '1.1',
+                'version': '2.0',
                 'method': self.service_name,
                 'params': args,
                 'id': self.id_count
@@ -251,7 +250,8 @@ class AsyncAuthServiceProxy:
                 'Host': self.url.hostname,
                 'User-Agent': "AuthServiceProxy/0.1",
                 'Authorization': self.auth_header,
-                'Content-type': 'application/json'
+                'Content-type': 'application/json',
+                'Connection': 'keep-alive'
             }
             for i in range(self.reconnect_amount):
                 try:
@@ -260,7 +260,7 @@ class AsyncAuthServiceProxy:
                         sleep_time = self.reconnect_timeout * (2 ** i)
                         log.info(f"Waiting for {sleep_time} seconds before retrying.")
                         await asyncio.sleep(sleep_time)
-                    response = await self.client.post(
+                    response = await self._client.post(
                         self.service_url, headers=headers, data=postdata)
                     break
                 except Exception as e:
