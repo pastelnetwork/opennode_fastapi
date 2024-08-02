@@ -23,6 +23,7 @@ python-magic
 python-multipart
 pytz
 requests
+ruff
 selenium
 sqlalchemy
 starlette

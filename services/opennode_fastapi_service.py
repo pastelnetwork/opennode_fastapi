@@ -26,6 +26,7 @@ import pandas as pd
 import psutil
 import zstandard as zstd
 from cachetools import LRUCache
+import httpx
 from httpx import AsyncClient, Limits, Timeout
 from sqlalchemy.future import select
 from sqlalchemy.exc import OperationalError, IntegrityError, DBAPIError
@@ -1956,6 +1957,42 @@ async def list_pastel_id_tickets_func(filter, minheight):
                 else:
                     raise e
         return registered_tickets
+    
+async def fetch_current_psl_market_price():
+    async def check_prices():
+        async with httpx.AsyncClient() as client:
+            try:
+                # Fetch data from CoinMarketCap
+                response_cmc = await client.get("https://coinmarketcap.com/currencies/pastel/")
+                price_cmc = float(re.search(r'price today is \$([0-9\.]+) USD', response_cmc.text).group(1))
+            except (httpx.RequestError, AttributeError, ValueError):
+                price_cmc = None
+            try:
+                # Fetch data from CoinGecko
+                response_cg = await client.get("https://api.coingecko.com/api/v3/simple/price?ids=pastel&vs_currencies=usd")
+                if response_cg.status_code == 200:
+                    data = response_cg.json()
+                    price_cg = data.get("pastel", {}).get("usd")
+                else:
+                    price_cg = None
+            except (httpx.RequestError, AttributeError, ValueError):
+                price_cg = None
+        return price_cmc, price_cg
+    price_cmc, price_cg = await check_prices()
+    if price_cmc is None and price_cg is None:
+        #Sleep for a couple seconds and try again:
+        await asyncio.sleep(2)
+        price_cmc, price_cg = await check_prices()
+    # Calculate the average price
+    prices = [price for price in [price_cmc, price_cg] if price is not None]
+    if not prices:
+        raise ValueError("Could not retrieve PSL price from any source.")
+    average_price = sum(prices) / len(prices)
+    # Validate the price
+    if not 0.0000001 < average_price < 0.02:
+        raise ValueError(f"Invalid PSL price: {average_price}")
+    log.info(f"The current Average PSL price is: ${average_price:.8f} based on {len(prices)} sources")
+    return average_price    
 #_______________________________________________________________
 
 

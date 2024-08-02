@@ -6,7 +6,7 @@ import json
 import tempfile
 import pandas as pd
 from typing import List
-from fastapi import HTTPException, BackgroundTasks, Query
+from fastapi import HTTPException, BackgroundTasks, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, FileResponse
 from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel, BlockDeltasResponse, AddressMempool, AddressTxIdsParams, AddressBalanceParams, AddressDeltasParams, AddressUtxosParams, SpentInfoParams, BlockHashesOptions
 from json import JSONEncoder
@@ -15,6 +15,26 @@ from pytz import timezone
 from typing import Optional, Callable, Any
 
 router = fastapi.APIRouter()
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        await websocket.send_text(message)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+
+manager = ConnectionManager()
 
 tags_metadata = [
     {"name": "High-Level Methods", "description": "Endpoints that are not actually part of the Pastel RPC API, but operate at a higher level of abstraction."},
@@ -28,7 +48,7 @@ tags_metadata = [
     {"name": "Utility Methods", "description": "Endpoints for various utility functions"},
     {"name": "Control Methods", "description": "Endpoints for various control methods"},
     {"name": "Insight Explorer Methods", "description": "Endpoints for Insight Explorer related data"},
-    
+    {"name": "Price Methods", "description": "Endpoints for retrieving PSL Market Data"},
 ]
 
 
@@ -942,11 +962,55 @@ def show_logs(minutes: int = 5):
     </html>""".format(logs_as_string_newlines_rendered, minutes)
     return logs_as_string_newlines_rendered_font_specified
 
-
 @router.get("/show_logs", response_class=HTMLResponse)
 def show_logs_default():
     return show_logs(5)
 
+@router.get('/psl/average_price', tags=["Price Methods"])
+async def get_average_psl_price():
+    try:
+        average_price = await service_funcs.fetch_current_psl_market_price()
+        return average_price
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/websocket_info", response_class=HTMLResponse, tags=["Price Methods"])
+async def websocket_info():
+    html_content = """
+    <html>
+    <head>
+        <title>WebSocket Endpoint Documentation</title>
+    </head>
+    <body>
+        <h1>WebSocket Endpoint: /ws/psl/price</h1>
+        <p>This endpoint provides real-time PSL price updates.</p>
+        <h2>How to Use:</h2>
+        <p>Connect to the WebSocket endpoint using a WebSocket client.</p>
+        <pre>
+        ws = new WebSocket("wss://opennode-fastapi.pastel.network/ws/psl/price");
+        ws.onmessage = function(event) {
+            console.log("Price update: ", event.data);
+        };
+        </pre>
+        <p>The server sends the current PSL price every 5 seconds.</p>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+@router.websocket("/ws/psl/price")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            try:
+                price = await service_funcs.fetch_current_psl_market_price()
+                await manager.send_personal_message(f"{price}", websocket)
+            except ValueError as e:
+                await manager.send_personal_message(f"Error: {str(e)}", websocket)
+            await asyncio.sleep(5)  # Refresh every 5 seconds
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 # if __name__ == "__main__":
 rpc_host, rpc_port, rpc_user, rpc_password, other_flags = service_funcs.get_local_rpc_settings_func()
