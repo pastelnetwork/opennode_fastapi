@@ -329,6 +329,21 @@ async def check_masternode_top_func():
     masternode_top_command_output = await rpc_connection.masternode('top')
     return masternode_top_command_output
 
+async def send_raw_transaction_func(hex_string: str, allow_high_fees: bool = False):
+    """Submit raw transaction to network"""
+    global rpc_connection
+    return await rpc_connection.sendrawtransaction(hex_string, allow_high_fees)
+
+async def create_raw_transaction_func(inputs: list, outputs: dict, locktime: int = 0, expiry_height: int = None):
+    """Create a raw transaction"""
+    global rpc_connection
+    if expiry_height is None:
+        # Get next block height and add 20 blocks as default expiry
+        current_height = await rpc_connection.getblockcount()
+        expiry_height = current_height + 20
+    
+    return await rpc_connection.createrawtransaction(inputs, outputs, locktime, expiry_height)
+
 async def check_supernode_list_func():
     global rpc_connection
     masternode_list_full_command_output = await rpc_connection.masternodelist('full')

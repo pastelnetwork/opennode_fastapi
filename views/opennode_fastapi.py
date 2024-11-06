@@ -5,10 +5,11 @@ import fastapi
 import json
 import tempfile
 import pandas as pd
+import asyncio
 from typing import List
 from fastapi import HTTPException, BackgroundTasks, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, FileResponse
-from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel, BlockDeltasResponse, AddressMempool, AddressTxIdsParams, AddressBalanceParams, AddressDeltasParams, AddressUtxosParams, SpentInfoParams, BlockHashesOptions
+from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel
 from json import JSONEncoder
 from datetime import datetime, timedelta
 from pytz import timezone
@@ -208,6 +209,69 @@ async def decoderawtransaction(hexstring: str):
     global rpc_connection
     return await handle_exceptions(rpc_connection.decoderawtransaction, hexstring)
 
+@router.post('/sendrawtransaction', tags=["Raw Transaction Methods"])
+async def send_raw_transaction(hex_string: str, allow_high_fees: bool = False):
+    """
+    Submit raw transaction (serialized, hex-encoded) to local node and network.
+    
+    Args:
+        hex_string (str): The hex string of the raw transaction
+        allow_high_fees (bool, optional): Allow high fees. Defaults to False.
+        
+    Returns:
+        str: The transaction hash in hex
+        
+    Example:
+        {
+            "hex_string": "0100000001...",
+            "allow_high_fees": false
+        }
+    """
+    return await handle_exceptions(service_funcs.send_raw_transaction_func, hex_string, allow_high_fees)
+
+@router.post('/createrawtransaction', tags=["Raw Transaction Methods"])
+async def create_raw_transaction(
+    inputs: List[dict], 
+    outputs: dict,
+    locktime: Optional[int] = 0,
+    expiry_height: Optional[int] = None
+):
+    """
+    Create a transaction spending given inputs and sending to given addresses.
+    
+    Args:
+        inputs (List[dict]): Array of json objects with txid, vout and optional sequence
+        outputs (dict): Object with addresses as keys and amounts as values
+        locktime (int, optional): Raw locktime. Defaults to 0.
+        expiry_height (int, optional): Expiry height of transaction
+        
+    Returns:
+        str: Hex string of the transaction
+        
+    Example Request Body:
+        {
+            "inputs": [
+                {
+                    "txid": "abc123...", 
+                    "vout": 0,
+                    "sequence": 0
+                }
+            ],
+            "outputs": {
+                "PtczsZ91Bt3o...": 0.01
+            },
+            "locktime": 0,
+            "expiry_height": 100000
+        }
+    """
+    return await handle_exceptions(
+        service_funcs.create_raw_transaction_func,
+        inputs,
+        outputs, 
+        locktime,
+        expiry_height
+    )
+    
 @router.get('/decodescript/{hexstring}', tags=["Raw Transaction Methods"])
 async def decodescript(hexstring: str):
     global rpc_connection
