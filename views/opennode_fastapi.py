@@ -9,7 +9,7 @@ import tempfile
 import pandas as pd
 import asyncio
 from typing import List
-from fastapi import HTTPException, BackgroundTasks, Query, WebSocket, WebSocketDisconnect
+from fastapi import HTTPException, BackgroundTasks, Query, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, FileResponse
 from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel
 from json import JSONEncoder
@@ -255,31 +255,26 @@ async def decoderawtransaction(hexstring: str):
 
 @router.post('/sendrawtransaction', tags=["Raw Transaction Methods"])
 async def send_raw_transaction(
-    hex_string: str, 
+    hex_string: Optional[str] = None,
     allow_high_fees: bool = False,
-    verify_amounts: bool = True
+    request: Request = None
 ):
     """
-    Submit raw transaction to network with enhanced validation and response data.
-    
-    Args:
-        hex_string (str): The transaction hex string
-        allow_high_fees (bool): Allow high fees, default False
-        verify_amounts (bool): Verify output amounts before sending, default True
-        
-    Returns:
-        dict: Detailed transaction submission response
+    Submit raw transaction (serialized, hex-encoded) to local node and network.
+    Accepts hex_string either as query parameter or in request body.
     """
     try:
+        # Try to get hex_string from query params first, then body
+        if not hex_string and request:
+            body = await request.json()
+            hex_string = body.get('hex_string')
+        
+        if not hex_string:
+            raise HTTPException(status_code=400, detail="hex_string is required")
+
         # First decode the transaction to verify structure and amounts
         decoded = await handle_exceptions(rpc_connection.decoderawtransaction, hex_string)
         
-        # Verify and process amounts
-        if verify_amounts and 'vout' in decoded:
-            for output in decoded['vout']:
-                if 'valuePat' in output:
-                    output['value'] = float(output['valuePat']) / 100000000
-
         # Submit transaction
         txid = await handle_exceptions(rpc_connection.sendrawtransaction, hex_string, allow_high_fees)
         
@@ -291,7 +286,7 @@ async def send_raw_transaction(
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error sending transaction: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get('/gettransactionconfirmations/{txid}', tags=["Raw Transaction Methods"])
 async def get_transaction_confirmations(txid: str):
