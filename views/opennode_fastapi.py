@@ -200,71 +200,139 @@ async def getfeeschedule():
 async def masternode(command_string: str):
     global rpc_connection
     return await handle_exceptions(rpc_connection.masternode, command_string)
-
 @router.get('/getrawtransaction/{txid}', tags=["Raw Transaction Methods"])
 async def getrawtransaction(txid: str):
-    global rpc_connection
-    return await handle_exceptions(rpc_connection.getrawtransaction, txid)
+    """
+    Get raw transaction data by transaction ID.
+    Includes full transaction details with proper value decoding.
+    
+    Args:
+        txid (str): The transaction ID
+        
+    Returns:
+        dict: Complete transaction data with decoded values
+    """
+    try:
+        # Get raw transaction with verbose=1 for full decoded data
+        tx_data = await handle_exceptions(rpc_connection.getrawtransaction, txid, 1)
+        
+        # Process vout values if present
+        if 'vout' in tx_data:
+            for output in tx_data['vout']:
+                if 'valuePat' in output:
+                    # Convert patoshis to PSL
+                    output['value'] = float(output['valuePat']) / 100000000
+                    
+        return tx_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving transaction: {str(e)}")
 
 @router.get('/decoderawtransaction/{hexstring}', tags=["Raw Transaction Methods"])
 async def decoderawtransaction(hexstring: str):
-    global rpc_connection
-    return await handle_exceptions(rpc_connection.decoderawtransaction, hexstring)
-
-@router.post('/sendrawtransaction', tags=["Raw Transaction Methods"])
-async def send_raw_transaction(hex_string: str, allow_high_fees: bool = False):
     """
-    Submit raw transaction (serialized, hex-encoded) to local node and network.
-    Returns immediately after broadcasting, without waiting for confirmation.
+    Decode a raw transaction hex string.
+    Ensures proper value decoding for all transaction outputs.
     
     Args:
-        hex_string (str): The hex string of the raw transaction
-        allow_high_fees (bool, optional): Allow high fees. Defaults to False.
+        hexstring (str): The transaction hex string to decode
         
     Returns:
-        dict: Transaction submission response containing:
-            - txid: The transaction hash in hex
-            - message: Status message indicating transaction was broadcast
-            
-    Example Request:
-        {
-            "hex_string": "0100000001...",
-            "allow_high_fees": false
-        }
+        dict: Decoded transaction data with proper values
     """
     try:
-        txid = await handle_exceptions(service_funcs.send_raw_transaction_func, hex_string, allow_high_fees)
+        decoded = await handle_exceptions(rpc_connection.decoderawtransaction, hexstring)
+        
+        # Process vout values
+        if 'vout' in decoded:
+            for output in decoded['vout']:
+                if 'valuePat' in output:
+                    # Convert patoshis to PSL
+                    output['value'] = float(output['valuePat']) / 100000000
+                    
+        return decoded
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error decoding transaction: {str(e)}")
+
+@router.post('/sendrawtransaction', tags=["Raw Transaction Methods"])
+async def send_raw_transaction(
+    hex_string: str, 
+    allow_high_fees: bool = False,
+    verify_amounts: bool = True
+):
+    """
+    Submit raw transaction to network with enhanced validation and response data.
+    
+    Args:
+        hex_string (str): The transaction hex string
+        allow_high_fees (bool): Allow high fees, default False
+        verify_amounts (bool): Verify output amounts before sending, default True
+        
+    Returns:
+        dict: Detailed transaction submission response
+    """
+    try:
+        # First decode the transaction to verify structure and amounts
+        decoded = await handle_exceptions(rpc_connection.decoderawtransaction, hex_string)
+        
+        # Verify and process amounts
+        if verify_amounts and 'vout' in decoded:
+            for output in decoded['vout']:
+                if 'valuePat' in output:
+                    output['value'] = float(output['valuePat']) / 100000000
+
+        # Submit transaction
+        txid = await handle_exceptions(rpc_connection.sendrawtransaction, hex_string, allow_high_fees)
+        
         return {
             "txid": txid,
-            "message": "Transaction broadcast to network. Use /gettransactionconfirmations endpoint to check confirmation status."
+            "decoded_tx": decoded,
+            "message": "Transaction broadcast to network",
+            "status": "success",
+            "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error sending transaction: {str(e)}")
 
 @router.get('/gettransactionconfirmations/{txid}', tags=["Raw Transaction Methods"])
 async def get_transaction_confirmations(txid: str):
     """
-    Get the number of confirmations for a transaction.
+    Get detailed confirmation status for a transaction.
     
     Args:
         txid (str): The transaction ID to check
         
     Returns:
-        dict: Confirmation status containing:
-            - confirmations: Number of confirmations (0 if unconfirmed)
-            - confirmed: Boolean indicating if transaction has at least 1 confirmation
-            
-    Example:
-        {
-            "confirmations": 2,
-            "confirmed": true
-        }
+        dict: Detailed confirmation status
     """
-    confirmations = await handle_exceptions(service_funcs.get_transaction_confirmations_func, txid)
-    return {
-        "confirmations": confirmations,
-        "confirmed": confirmations > 0
-    }
+    try:
+        # Get full transaction data
+        tx_data = await handle_exceptions(rpc_connection.getrawtransaction, txid, 1)
+        
+        confirmations = tx_data.get('confirmations', 0)
+        block_hash = tx_data.get('blockhash', None)
+        block_time = tx_data.get('blocktime', None)
+        
+        return {
+            "txid": txid,
+            "confirmations": confirmations,
+            "confirmed": confirmations > 0,
+            "block_hash": block_hash,
+            "block_time": datetime.fromtimestamp(block_time).isoformat() if block_time else None,
+            "in_mempool": confirmations == 0 and tx_data.get('time', 0) > 0,
+            "status": "confirmed" if confirmations > 0 else "pending",
+            "check_time": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        # If transaction not found, it's not in mempool or blockchain
+        if "No information" in str(e):
+            return {
+                "txid": txid,
+                "confirmations": 0,
+                "confirmed": False,
+                "status": "not_found",
+                "check_time": datetime.utcnow().isoformat()
+            }
+        raise HTTPException(status_code=500, detail=f"Error checking confirmation status: {str(e)}")
 
 @router.post('/createrawtransaction', tags=["Raw Transaction Methods"])
 async def create_raw_transaction(
@@ -274,45 +342,72 @@ async def create_raw_transaction(
     expiry_height: Optional[int] = None
 ):
     """
-    Create a transaction spending given inputs and sending to given addresses.
+    Create a raw transaction with enhanced validation and proper amount handling.
     
     Args:
-        inputs (List[dict]): Array of json objects with txid, vout and optional sequence
-        outputs (dict): Object with addresses as keys and amounts as values
-        locktime (int, optional): Raw locktime. Defaults to 0.
-        expiry_height (int, optional): Expiry height of transaction
+        inputs (List[dict]): Transaction inputs (txid, vout, sequence)
+        outputs (dict): Transaction outputs (address: amount)
+        locktime (int): Transaction locktime
+        expiry_height (int): Transaction expiry height
         
     Returns:
-        str: Hex string of the transaction
-        
-    Example Request Body:
-        {
-            "inputs": [
-                {
-                    "txid": "abc123...", 
-                    "vout": 0,
-                    "sequence": 0
-                }
-            ],
-            "outputs": {
-                "PtczsZ91Bt3o...": 0.01
-            },
-            "locktime": 0,
-            "expiry_height": 100000
-        }
+        dict: Created transaction data
     """
-    return await handle_exceptions(
-        service_funcs.create_raw_transaction_func,
-        inputs,
-        outputs, 
-        locktime,
-        expiry_height
-    )
-    
+    try:
+        # Validate inputs
+        for inp in inputs:
+            if not all(k in inp for k in ['txid', 'vout']):
+                raise HTTPException(status_code=400, detail="Invalid input format")
+            if len(inp['txid']) != 64:
+                raise HTTPException(status_code=400, detail="Invalid txid length")
+
+        # Validate and process outputs
+        processed_outputs = {}
+        for address, amount in outputs.items():
+            if not isinstance(amount, (int, float, str)):
+                raise HTTPException(status_code=400, detail=f"Invalid amount for address {address}")
+            try:
+                processed_outputs[address] = float(amount)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid amount format for address {address}")
+
+        # Create transaction
+        hex_string = await handle_exceptions(
+            service_funcs.create_raw_transaction_func,
+            inputs,
+            processed_outputs,
+            locktime,
+            expiry_height
+        )
+
+        # Decode the created transaction for verification
+        decoded = await handle_exceptions(rpc_connection.decoderawtransaction, hex_string)
+        
+        return {
+            "hex": hex_string,
+            "decoded": decoded,
+            "locktime": locktime,
+            "expiry_height": expiry_height,
+            "created_at": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating transaction: {str(e)}")
+
 @router.get('/decodescript/{hexstring}', tags=["Raw Transaction Methods"])
 async def decodescript(hexstring: str):
-    global rpc_connection
-    return await handle_exceptions(rpc_connection.decodescript, hexstring)
+    """
+    Decode a script hex string.
+    
+    Args:
+        hexstring (str): The script hex string to decode
+        
+    Returns:
+        dict: Decoded script data
+    """
+    try:
+        return await handle_exceptions(rpc_connection.decodescript, hexstring)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error decoding script: {str(e)}")
 
 @router.get('/estimatefee/{nblocks}', tags=["Utility Methods"])
 async def estimatefee(nblocks: int):

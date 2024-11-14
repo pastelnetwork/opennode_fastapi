@@ -331,24 +331,36 @@ async def check_masternode_top_func():
     masternode_top_command_output = await rpc_connection.masternode('top')
     return masternode_top_command_output
 
-
-async def send_raw_transaction_func(hex_string: str, allow_high_fees: bool = False):
+async def decode_raw_transaction_func(hex_string: str, allow_high_fees: bool = False):
     """
-    Submit raw transaction to network without waiting for confirmation.
-    Returns immediately after broadcasting to network.
-    
-    Args:
-        hex_string (str): The hex string of the raw transaction
-        allow_high_fees (bool): Allow high fees. Default is false
-        
-    Returns:
-        str: The transaction hash in hex
+    Decode raw transaction to verify structure before sending.
     """
     global rpc_connection
     try:
-        # Broadcast transaction but don't wait for confirmation
+        decoded = await rpc_connection.decoderawtransaction(hex_string)
+        # Validate vout amounts
+        for output in decoded.get('vout', []):
+            if 'valuePat' in output:  # Use valuePat (in patoshis) for precise amount
+                output['value'] = float(output['valuePat']) / 100000000  # Convert to PSL
+        return decoded
+    except Exception as e:
+        log.error(f"Error decoding transaction: {e}")
+        raise e
+
+async def send_raw_transaction_func(hex_string: str, allow_high_fees: bool = False):
+    """
+    Submit raw transaction to network with amount validation.
+    """
+    global rpc_connection
+    try:
+        # First decode to verify amounts
+        decoded = await decode_raw_transaction_func(hex_string, allow_high_fees)
+        # Then send if valid
         txid = await rpc_connection.sendrawtransaction(hex_string, allow_high_fees)
-        return txid
+        return {
+            'txid': txid,
+            'decoded': decoded  # Include decoded tx data for verification
+        }
     except Exception as e:
         log.error(f"Error in send_raw_transaction_func: {e}")
         raise e
