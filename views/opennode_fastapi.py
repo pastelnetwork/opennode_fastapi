@@ -1,3 +1,5 @@
+# /views/opennode_fastapi.py
+
 import services.opennode_fastapi_service as service_funcs
 import io
 import os
@@ -213,21 +215,56 @@ async def decoderawtransaction(hexstring: str):
 async def send_raw_transaction(hex_string: str, allow_high_fees: bool = False):
     """
     Submit raw transaction (serialized, hex-encoded) to local node and network.
+    Returns immediately after broadcasting, without waiting for confirmation.
     
     Args:
         hex_string (str): The hex string of the raw transaction
         allow_high_fees (bool, optional): Allow high fees. Defaults to False.
         
     Returns:
-        str: The transaction hash in hex
-        
-    Example:
+        dict: Transaction submission response containing:
+            - txid: The transaction hash in hex
+            - message: Status message indicating transaction was broadcast
+            
+    Example Request:
         {
             "hex_string": "0100000001...",
             "allow_high_fees": false
         }
     """
-    return await handle_exceptions(service_funcs.send_raw_transaction_func, hex_string, allow_high_fees)
+    try:
+        txid = await handle_exceptions(service_funcs.send_raw_transaction_func, hex_string, allow_high_fees)
+        return {
+            "txid": txid,
+            "message": "Transaction broadcast to network. Use /gettransactionconfirmations endpoint to check confirmation status."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get('/gettransactionconfirmations/{txid}', tags=["Raw Transaction Methods"])
+async def get_transaction_confirmations(txid: str):
+    """
+    Get the number of confirmations for a transaction.
+    
+    Args:
+        txid (str): The transaction ID to check
+        
+    Returns:
+        dict: Confirmation status containing:
+            - confirmations: Number of confirmations (0 if unconfirmed)
+            - confirmed: Boolean indicating if transaction has at least 1 confirmation
+            
+    Example:
+        {
+            "confirmations": 2,
+            "confirmed": true
+        }
+    """
+    confirmations = await handle_exceptions(service_funcs.get_transaction_confirmations_func, txid)
+    return {
+        "confirmations": confirmations,
+        "confirmed": confirmations > 0
+    }
 
 @router.post('/createrawtransaction', tags=["Raw Transaction Methods"])
 async def create_raw_transaction(

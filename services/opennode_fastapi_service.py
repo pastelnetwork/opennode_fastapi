@@ -1,3 +1,5 @@
+# /services/opennode_fastapi_service.py
+
 import asyncio
 import base64
 import decimal
@@ -329,10 +331,47 @@ async def check_masternode_top_func():
     masternode_top_command_output = await rpc_connection.masternode('top')
     return masternode_top_command_output
 
+
 async def send_raw_transaction_func(hex_string: str, allow_high_fees: bool = False):
-    """Submit raw transaction to network"""
+    """
+    Submit raw transaction to network without waiting for confirmation.
+    Returns immediately after broadcasting to network.
+    
+    Args:
+        hex_string (str): The hex string of the raw transaction
+        allow_high_fees (bool): Allow high fees. Default is false
+        
+    Returns:
+        str: The transaction hash in hex
+    """
     global rpc_connection
-    return await rpc_connection.sendrawtransaction(hex_string, allow_high_fees)
+    try:
+        # Broadcast transaction but don't wait for confirmation
+        txid = await rpc_connection.sendrawtransaction(hex_string, allow_high_fees)
+        return txid
+    except Exception as e:
+        log.error(f"Error in send_raw_transaction_func: {e}")
+        raise e
+
+# Add new helper function to check transaction confirmation status
+async def get_transaction_confirmations_func(txid: str) -> int:
+    """
+    Get number of confirmations for a transaction.
+    
+    Args:
+        txid (str): Transaction ID to check
+        
+    Returns:
+        int: Number of confirmations, 0 if unconfirmed
+    """
+    global rpc_connection
+    try:
+        tx_data = await rpc_connection.getrawtransaction(txid, 1)
+        return tx_data.get('confirmations', 0)
+    except Exception as e:
+        # Transaction not found or other error
+        log.error(f"Error checking confirmations for txid {txid}: {e}")
+        return 0
 
 async def create_raw_transaction_func(inputs: list, outputs: dict, locktime: int = 0, expiry_height: int = None):
     """Create a raw transaction"""
