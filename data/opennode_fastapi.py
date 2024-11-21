@@ -1,15 +1,17 @@
+# /data/opennode_fastapi.py
+
 import sqlalchemy as sa
 from data.modelbase import SqlAlchemyBase
 from sqlalchemy import Column, String, DateTime
-from typing import List, Optional
-import datetime
-from pydantic import BaseModel
+from typing import List, Optional, Dict, Any
+from datetime import datetime
+from pydantic import BaseModel, ConfigDict
 
 class OpenNodeFastAPIRequests(SqlAlchemyBase):
     __tablename__ = 'opennode_fastapi_requests'
     id = sa.Column(sa.Integer, primary_key=True)
-    datetime_request_received: datetime.datetime = sa.Column(sa.DateTime, default=datetime.datetime.now, index=True)
-    datetime_request_fulfilled: datetime.datetime = sa.Column(sa.DateTime, index=True)
+    datetime_request_received: datetime = sa.Column(sa.DateTime, default=datetime.now, index=True)
+    datetime_request_fulfilled: datetime = sa.Column(sa.DateTime, index=True)
     user_specified_pastel_address_to_send_to: str = sa.Column(sa.String, nullable=False, index=True)
     requesting_ip_address: str = sa.Column(sa.String, nullable=True, index=True)
     requested_amount_in_lsp: float = sa.Column(sa.Float, nullable=True)
@@ -91,12 +93,12 @@ class RawDDServiceData(SqlAlchemyBase):
 class CascadeCacheFileLocks(SqlAlchemyBase):
     __tablename__ = 'cascade_cache_file_locks'
     txid = Column(String(64), primary_key=True)
-    lock_created_at = Column(DateTime, default=datetime.datetime.utcnow)  # lock creation timestamp
+    lock_created_at = Column(DateTime, default=datetime.utcnow)  # lock creation timestamp
     
 class DdServiceLocks(SqlAlchemyBase):
     __tablename__ = 'dd_service_locks'
     txid = Column(String(64), primary_key=True)
-    lock_created_at = Column(DateTime, default=datetime.datetime.utcnow)  # lock creation timestamp
+    lock_created_at = Column(DateTime, default=datetime.utcnow)  # lock creation timestamp
     
 class BadTXID(SqlAlchemyBase):
     __tablename__ = 'bad_txids'
@@ -104,9 +106,9 @@ class BadTXID(SqlAlchemyBase):
     txid = sa.Column(sa.String, nullable=False, index=True)
     ticket_type = sa.Column(sa.String, nullable=False, index=True)
     reason_txid_is_bad = sa.Column(sa.String, nullable=True)
-    datetime_txid_marked_as_bad = sa.Column(sa.DateTime, default=datetime.datetime.now, index=True)
+    datetime_txid_marked_as_bad = sa.Column(sa.DateTime, default=datetime.now, index=True)
     failed_attempts = sa.Column(sa.Integer, default=0)
-    next_attempt_time = sa.Column(sa.DateTime, default=datetime.datetime.now)
+    next_attempt_time = sa.Column(sa.DateTime, default=datetime.now)
 
 class ShowLogsIncrementalModel(BaseModel):
     logs: str
@@ -146,3 +148,32 @@ class SpentInfoParams(BaseModel):
 class BlockHashesOptions(BaseModel):
     noOrphans: Optional[bool] = None
     logicalTimes: Optional[bool] = None
+    
+class TransactionStatusResponse(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    txid: str
+    status: str  # "confirmed", "pending", or "not_found"
+    confirmations: Optional[int] = None
+    in_mempool: bool
+    block_hash: Optional[str] = None
+    block_height: Optional[int] = None 
+    block_time: Optional[datetime] = None
+    mempool_time: Optional[datetime] = None
+    check_time: datetime
+
+class MempoolStatus(BaseModel):
+    in_mempool: bool
+    mempool_time: Optional[str] = None  # Store as ISO format string
+    mempool_size: Optional[int] = None
+    mempool_bytes: Optional[int] = None
+
+class TransactionResponse(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    txid: str
+    decoded_tx: Dict[str, Any]
+    mempool_status: MempoolStatus
+    message: str
+    status: str
+    timestamp: str  # Store as ISO format string

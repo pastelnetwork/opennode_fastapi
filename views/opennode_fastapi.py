@@ -11,7 +11,7 @@ import asyncio
 from typing import List
 from fastapi import HTTPException, BackgroundTasks, Query, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, FileResponse
-from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel
+from data.opennode_fastapi import ValidationError, ShowLogsIncrementalModel, TransactionStatusResponse, MempoolStatus, TransactionResponse
 from json import JSONEncoder
 from datetime import datetime, timedelta
 from pytz import timezone
@@ -252,7 +252,7 @@ async def decoderawtransaction(hexstring: str):
         return decoded
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error decoding transaction: {str(e)}")
-
+    
 @router.post('/sendrawtransaction', tags=["Raw Transaction Methods"])
 async def send_raw_transaction(
     hex_string: Optional[str] = None,
@@ -261,7 +261,7 @@ async def send_raw_transaction(
 ):
     """
     Submit raw transaction (serialized, hex-encoded) to local node and network.
-    Accepts hex_string either as query parameter or in request body.
+    Verifies the transaction was accepted into the mempool after broadcast.
     """
     try:
         # Try to get hex_string from query params first, then body
@@ -278,16 +278,36 @@ async def send_raw_transaction(
         # Submit transaction
         txid = await handle_exceptions(rpc_connection.sendrawtransaction, hex_string, allow_high_fees)
         
-        return {
-            "txid": txid,
-            "decoded_tx": decoded,
-            "message": "Transaction broadcast to network",
-            "status": "success",
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        # Immediately check if transaction entered the mempool
+        mempool = await handle_exceptions(rpc_connection.getrawmempool, True)
+        mempool_status = MempoolStatus(
+            in_mempool=txid in mempool,
+            mempool_time=None,
+            mempool_size=None,
+            mempool_bytes=None
+        )
+        
+        if mempool_status.in_mempool:
+            mempool_data = mempool[txid]
+            mempool_status.mempool_time = datetime.fromtimestamp(mempool_data.get('time')).isoformat() if mempool_data.get('time') else None
+            
+            # Get additional mempool info
+            mempool_info = await handle_exceptions(rpc_connection.getmempoolinfo)
+            mempool_status.mempool_size = mempool_info.get('size')
+            mempool_status.mempool_bytes = mempool_info.get('bytes')
+        
+        response = TransactionResponse(
+            txid=txid,
+            decoded_tx=decoded,
+            mempool_status=mempool_status,
+            message="Transaction broadcast to network" + (" and accepted to mempool" if mempool_status.in_mempool else ""),
+            status="success" if mempool_status.in_mempool else "warning",
+            timestamp=datetime.utcnow().isoformat()
+        )
+        
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 @router.get('/gettransactionconfirmations/{txid}', tags=["Raw Transaction Methods"])
 async def get_transaction_confirmations(txid: str):
     """
@@ -328,6 +348,63 @@ async def get_transaction_confirmations(txid: str):
                 "check_time": datetime.utcnow().isoformat()
             }
         raise HTTPException(status_code=500, detail=f"Error checking confirmation status: {str(e)}")
+
+@router.get('/check_transaction_status/{txid}', tags=["Raw Transaction Methods"])
+async def check_transaction_status(txid: str):
+    """
+    Check if a transaction is confirmed in a block or pending in the mempool.
+    
+    Args:
+        txid (str): The transaction ID to check
+        
+    Returns:
+        TransactionStatusResponse: Detailed status of the transaction
+    """
+    try:
+        # First try to get the confirmed transaction
+        try:
+            tx_data = await rpc_connection.getrawtransaction(txid, 1)
+            confirmations = tx_data.get('confirmations', 0)
+            
+            if confirmations > 0:
+                return TransactionStatusResponse(
+                    txid=txid,
+                    status="confirmed",
+                    confirmations=confirmations,
+                    in_mempool=False,
+                    block_hash=tx_data.get('blockhash'),
+                    block_height=tx_data.get('height'),
+                    block_time=datetime.fromtimestamp(tx_data.get('blocktime')) if tx_data.get('blocktime') else None,
+                    check_time=datetime.utcnow()
+                )
+        except Exception as e:
+            if "No information" not in str(e):  # Unexpected error
+                raise HTTPException(status_code=500, detail=f"Error checking confirmation status: {str(e)}")
+
+        # If not confirmed, check mempool
+        mempool = await rpc_connection.getrawmempool(True)
+        if txid in mempool:
+            mempool_data = mempool[txid]
+            return TransactionStatusResponse(
+                txid=txid,
+                status="pending",
+                confirmations=0,
+                in_mempool=True,
+                mempool_time=datetime.fromtimestamp(mempool_data.get('time')) if mempool_data.get('time') else None,
+                check_time=datetime.utcnow()
+            )
+
+        # If not found in either place
+        return TransactionStatusResponse(
+            txid=txid,
+            status="not_found",
+            confirmations=0,
+            in_mempool=False,
+            check_time=datetime.utcnow()
+        )
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking transaction status: {str(e)}")
 
 @router.post('/createrawtransaction', tags=["Raw Transaction Methods"])
 async def create_raw_transaction(
